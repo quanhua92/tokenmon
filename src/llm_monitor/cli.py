@@ -470,13 +470,41 @@ def main() -> int:
     else:
         windows = ["30m", "1d", "7d", "30d"]
 
+    analysis = analyze_windows(all_spans, window_names=windows, now=now)
+    valid_spans = [s for s in all_spans if s.tps is not None]
+
+    # Collect recent sessions preview
+    timelines: list[SessionTimeline] = []
+    for adapter in adapters:
+        timelines.extend(adapter.collect_sessions(max_sessions=5))
+    timelines.sort(key=lambda t: t.updated_at, reverse=True)
+
     if args.json:
-        grouped_results = {}
+        # 1. Models throughput breakdown
+        models_json = {}
+        for model, summaries in analysis.items():
+            models_json[model] = {
+                st.window_name: {
+                    "total_spans": st.total_spans,
+                    "valid_spans": st.valid_spans,
+                    "excluded_spans": st.excluded_spans,
+                    "total_tokens": st.total_tokens,
+                    "total_duration_seconds": round(st.total_duration, 3),
+                    "weighted_tps": round(st.weighted_tps, 2) if st.weighted_tps is not None else None,
+                    "median_tps": round(st.median_tps, 2) if st.median_tps is not None else None,
+                    "min_tps": round(st.min_tps, 2) if st.min_tps is not None else None,
+                    "max_tps": round(st.max_tps, 2) if st.max_tps is not None else None,
+                }
+                for st in summaries
+            }
+
+        # Overall summary across all models
+        overall_summary = {}
         for win in windows:
             dur = WINDOW_DURATIONS[win]
             win_spans = filter_by_window(all_spans, dur, now)
             st = summarize_spans(win_spans, win, "all_models")
-            grouped_results[win] = {
+            overall_summary[win] = {
                 "total_spans": st.total_spans,
                 "valid_spans": st.valid_spans,
                 "excluded_spans": st.excluded_spans,
@@ -487,7 +515,57 @@ def main() -> int:
                 "min_tps": round(st.min_tps, 2) if st.min_tps is not None else None,
                 "max_tps": round(st.max_tps, 2) if st.max_tps is not None else None,
             }
-        print(json.dumps(grouped_results, indent=2))
+
+        # 2. Recent generation streams
+        recent_count = min(args.recent, len(valid_spans)) if args.recent > 0 else 0
+        recent_streams_json = [
+            {
+                "timestamp": s.ended_at,
+                "agent": s.agent,
+                "session_id": s.session_id,
+                "turn_id": s.turn_id,
+                "model": s.model,
+                "tokens": s.tokens,
+                "duration": round(s.duration, 3),
+                "tps": round(s.tps, 2) if s.tps is not None else None,
+                "timing_source": s.timing_source,
+            }
+            for s in valid_spans[-recent_count:]
+        ] if recent_count > 0 else []
+
+        # 3. Recent session cards
+        preview_count = min(3, len(timelines))
+        recent_sessions_json = [
+            {
+                "session_id": t.session_id,
+                "agent": t.agent,
+                "model": t.model,
+                "status": t.status(now),
+                "user_messages": t.user_messages,
+                "assistant_messages": t.assistant_messages,
+                "tool_calls": t.tool_calls,
+                "total_tokens": t.total_tokens,
+                "duration_seconds": round(t.session_duration, 2),
+                "created_at": t.created_at,
+                "updated_at": t.updated_at,
+            }
+            for t in timelines[:preview_count]
+        ]
+
+        full_output = {
+            "meta": {
+                "version": __version__,
+                "agents": [a.name for a in adapters],
+                "inspected_spans": len(all_spans),
+                "tasks_limit": args.tasks,
+                "timestamp": now,
+            },
+            "summary": overall_summary,
+            "models": models_json,
+            "recent_streams": recent_streams_json,
+            "recent_sessions": recent_sessions_json,
+        }
+        print(json.dumps(full_output, indent=2))
         return 0
 
     # Human-readable terminal output
@@ -500,14 +578,12 @@ def main() -> int:
         return 0
 
     compact_flag = True if args.compact else (False if args.wide else None)
-    analysis = analyze_windows(all_spans, window_names=windows, now=now)
     for model, summaries in analysis.items():
         print(f"🤖 Model: \033[1m{model}\033[0m")
         print(format_table(summaries, compact=compact_flag))
         print()
 
     # Recent outputs breakdown
-    valid_spans = [s for s in all_spans if s.tps is not None]
     if valid_spans and args.recent > 0:
         recent_count = min(args.recent, len(valid_spans))
         print(f"📋 Recent {recent_count} Generation Streams:")
@@ -516,11 +592,6 @@ def main() -> int:
         print()
 
     # Recent Sessions & User Interactions overview
-    timelines: list[SessionTimeline] = []
-    for adapter in adapters:
-        timelines.extend(adapter.collect_sessions(max_sessions=5))
-    timelines.sort(key=lambda t: t.updated_at, reverse=True)
-
     if timelines:
         preview_count = min(3, len(timelines))
         print(f"🔍 Recent Sessions & User Interactions (latest {preview_count}):\n")

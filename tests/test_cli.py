@@ -72,8 +72,15 @@ class TestCLIIntegration(unittest.TestCase):
         res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res.returncode, 0)
         data = json.loads(res.stdout)
-        self.assertIn("all", data)
-        self.assertEqual(data["all"]["weighted_tps"], 60.0)
+        self.assertIn("meta", data)
+        self.assertIn("summary", data)
+        self.assertIn("models", data)
+        self.assertIn("recent_streams", data)
+        self.assertIn("recent_sessions", data)
+        self.assertIn("all", data["summary"])
+        self.assertEqual(data["summary"]["all"]["weighted_tps"], 60.0)
+        self.assertIn("gpt-5", data["models"])
+        self.assertEqual(len(data["recent_streams"]), 1)
 
     def test_cli_sessions_list(self):
         cmd = [
