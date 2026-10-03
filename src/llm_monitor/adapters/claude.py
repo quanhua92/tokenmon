@@ -51,7 +51,7 @@ class ClaudeAdapter(BaseAdapter):
         projects_dir = r / "projects"
         return projects_dir.exists() or (r / "history.jsonl").exists()
 
-    def _discover_session_files(self, max_sessions: int) -> list[Path]:
+    def _discover_session_files(self, max_sessions: int, min_timestamp: float | None = None) -> list[Path]:
         projects_dir = self.root / "projects"
         candidates: list[Path] = []
 
@@ -59,25 +59,32 @@ class ClaudeAdapter(BaseAdapter):
             # Find all *.jsonl files across project directories
             for jsonl_file in projects_dir.glob("*/*.jsonl"):
                 if jsonl_file.is_file() and jsonl_file.stat().st_size > 0:
+                    if min_timestamp is not None and jsonl_file.stat().st_mtime < min_timestamp:
+                        continue
                     candidates.append(jsonl_file)
 
         # Sort by modification time descending
         candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return candidates[:max_sessions]
 
-    def collect(self, max_sessions: int = 64) -> list[GenerationSpan]:
-        session_files = self._discover_session_files(max_sessions)
+    def collect(self, max_sessions: int = 64, min_timestamp: float | None = None) -> list[GenerationSpan]:
+        session_files = self._discover_session_files(max_sessions, min_timestamp=min_timestamp)
         all_spans: list[GenerationSpan] = []
 
         for p in session_files:
             session_id = p.stem
-            spans = self._parse_session_spans(session_id, p)
+            spans = self._parse_session_spans(session_id, p, min_timestamp=min_timestamp)
             all_spans.extend(spans)
 
         all_spans.sort(key=lambda s: s.ended_at)
         return all_spans
 
-    def _parse_session_spans(self, session_id: str, jsonl_path: Path) -> list[GenerationSpan]:
+    def _parse_session_spans(
+        self,
+        session_id: str,
+        jsonl_path: Path,
+        min_timestamp: float | None = None,
+    ) -> list[GenerationSpan]:
         spans: list[GenerationSpan] = []
         prev_event_time: float | None = None
 
@@ -101,6 +108,9 @@ class ClaudeAdapter(BaseAdapter):
                     if at is None:
                         continue
 
+                    if min_timestamp is not None and at < min_timestamp:
+                        continue
+
                     if rec_type in {"user", "last-prompt", "tool_result"}:
                         prev_event_time = at
 
@@ -121,6 +131,8 @@ class ClaudeAdapter(BaseAdapter):
 
             first_at, first_rec = chunks[0]
             last_at, last_rec = chunks[-1]
+            if min_timestamp is not None and last_at < min_timestamp:
+                continue
             req_start = message_starts.get(msg_id)
 
             msg = last_rec.get("message", {})
@@ -156,8 +168,8 @@ class ClaudeAdapter(BaseAdapter):
 
         return spans
 
-    def collect_sessions(self, max_sessions: int = 32) -> list[SessionTimeline]:
-        session_files = self._discover_session_files(max_sessions)
+    def collect_sessions(self, max_sessions: int = 32, min_timestamp: float | None = None) -> list[SessionTimeline]:
+        session_files = self._discover_session_files(max_sessions, min_timestamp=min_timestamp)
         timelines: list[SessionTimeline] = []
 
         for p in session_files:

@@ -33,20 +33,20 @@ class MonitorShell(cmd.Cmd):
         self._cached_timelines: list[SessionTimeline] = []
         self._last_refresh = 0.0
 
-    def _get_spans(self, max_sessions: int = 64) -> list[GenerationSpan]:
+    def _get_spans(self, max_sessions: int = 64, min_timestamp: float | None = None) -> list[GenerationSpan]:
         all_spans = []
         for a in self.adapters:
-            all_spans.extend(a.collect(max_sessions=max_sessions))
+            all_spans.extend(a.collect(max_sessions=max_sessions, min_timestamp=min_timestamp))
         all_spans.sort(key=lambda s: s.ended_at)
         return all_spans
 
-    def _get_timelines(self, max_sessions: int = 32, force: bool = False) -> list[SessionTimeline]:
+    def _get_timelines(self, max_sessions: int = 32, min_timestamp: float | None = None, force: bool = False) -> list[SessionTimeline]:
         now = time.time()
         if not force and self._cached_timelines and (now - self._last_refresh < 3.0):
             return self._cached_timelines
         timelines = []
         for a in self.adapters:
-            timelines.extend(a.collect_sessions(max_sessions=max_sessions))
+            timelines.extend(a.collect_sessions(max_sessions=max_sessions, min_timestamp=min_timestamp))
         timelines.sort(key=lambda t: t.updated_at, reverse=True)
         self._cached_timelines = timelines
         self._last_refresh = now
@@ -60,18 +60,23 @@ class MonitorShell(cmd.Cmd):
         """Show token throughput and TPS metrics across windows.
 Usage: summary [30m|1d|7d|30d|all]
 Alias: s"""
-        spans = self._get_spans()
-        if not spans:
-            print("No output streams found.")
-            return
-
         arg_clean = arg.strip()
+        min_ts: float | None = None
         if arg_clean in WINDOW_DURATIONS:
             windows = [arg_clean]
+            if arg_clean != "all":
+                min_ts = time.time() - WINDOW_DURATIONS[arg_clean]
         elif arg_clean == "all":
             windows = ["30m", "1d", "7d", "30d", "all"]
         else:
             windows = ["30m", "1d", "7d", "30d"]
+            min_ts = time.time() - (30 * 86400.0)
+
+        spans = self._get_spans(min_timestamp=min_ts)
+        if not spans:
+            print("No output streams found.")
+            return
+
         analysis = analyze_windows(spans, window_names=windows, now=time.time())
 
         for model, summaries in analysis.items():

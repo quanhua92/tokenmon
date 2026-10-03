@@ -22,13 +22,19 @@ class BaseAdapter(ABC):
         ...
 
     @abstractmethod
-    def collect(self, max_sessions: int = 64) -> list[GenerationSpan]:
-        """Read local logs in strict read-only mode and return parsed generation spans."""
+    def collect(self, max_sessions: int = 64, min_timestamp: float | None = None) -> list[GenerationSpan]:
+        """Read local logs in strict read-only mode and return parsed generation spans.
+
+        If min_timestamp is given, skip files/events strictly older than min_timestamp.
+        """
         ...
 
     @abstractmethod
-    def collect_sessions(self, max_sessions: int = 32) -> list[SessionTimeline]:
-        """Read local sessions and return parsed timelines with user/assistant activity."""
+    def collect_sessions(self, max_sessions: int = 32, min_timestamp: float | None = None) -> list[SessionTimeline]:
+        """Read local sessions and return parsed timelines with user/assistant activity.
+
+        If min_timestamp is given, skip sessions updated before min_timestamp.
+        """
         ...
 
     def last_generation_timestamp(self, max_probe_sessions: int = 5) -> float | None:

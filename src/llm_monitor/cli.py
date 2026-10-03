@@ -424,11 +424,19 @@ def main() -> int:
         print()
         return 0
 
+    # Compute cutoff timestamp (default 30 days unless --all or window is 'all')
+    min_ts: float | None = None
+    if not args.all and args.window != "all":
+        if args.window:
+            min_ts = now - WINDOW_DURATIONS[args.window]
+        else:
+            min_ts = now - (30 * 86400.0)
+
     # Handle --sessions mode
     if args.sessions:
         timelines = []
         for adapter in adapters:
-            timelines.extend(adapter.collect_sessions(max_sessions=args.tasks))
+            timelines.extend(adapter.collect_sessions(max_sessions=args.tasks, min_timestamp=min_ts))
 
         if args.json:
             out = [
@@ -463,7 +471,7 @@ def main() -> int:
     # Default Mode: Collect spans for throughput / TPS monitoring
     all_spans: list[GenerationSpan] = []
     for adapter in adapters:
-        all_spans.extend(adapter.collect(max_sessions=args.tasks))
+        all_spans.extend(adapter.collect(max_sessions=args.tasks, min_timestamp=min_ts))
 
     all_spans.sort(key=lambda s: s.ended_at)
     if args.window:

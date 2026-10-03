@@ -107,7 +107,7 @@ class AntigravityAdapter(BaseAdapter):
         summary_db = r / "conversation_summaries.db"
         return conv_dir.is_dir() or summary_db.is_file()
 
-    def _discover_session_dbs(self, max_sessions: int) -> list[Path]:
+    def _discover_session_dbs(self, max_sessions: int, min_timestamp: float | None = None) -> list[Path]:
         conv_dir = self.root / "conversations"
         if not conv_dir.exists():
             return []
@@ -120,11 +120,18 @@ class AntigravityAdapter(BaseAdapter):
                 with closing(open_ro_db(summary_db)) as conn:
                     cur = conn.cursor()
                     cur.execute(
-                        "SELECT conversation_id FROM conversation_summaries "
+                        "SELECT conversation_id, last_modified_time FROM conversation_summaries "
                         "ORDER BY last_modified_time DESC LIMIT ?",
                         (max_sessions * 2,),
                     )
-                    for (cid,) in cur.fetchall():
+                    for cid, lmt in cur.fetchall():
+                        if min_timestamp is not None and lmt:
+                            try:
+                                dt = datetime.fromisoformat(str(lmt).replace("Z", "+00:00"))
+                                if dt.timestamp() < min_timestamp:
+                                    continue
+                            except Exception:
+                                pass
                         db_p = conv_dir / f"{cid}.db"
                         if db_p.is_file():
                             candidates.append(db_p)
@@ -134,9 +141,11 @@ class AntigravityAdapter(BaseAdapter):
                 pass
 
         if not candidates:
-            files = list(conv_dir.glob("*.db"))
-            files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            candidates = files[:max_sessions]
+            all_files = list(conv_dir.glob("*.db"))
+            if min_timestamp is not None:
+                all_files = [p for p in all_files if p.stat().st_mtime >= min_timestamp]
+            all_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            candidates = all_files[:max_sessions]
 
         return candidates
 
@@ -166,8 +175,8 @@ class AntigravityAdapter(BaseAdapter):
 
         return latest_ts
 
-    def collect(self, max_sessions: int = 64) -> list[GenerationSpan]:
-        dbs = self._discover_session_dbs(max_sessions)
+    def collect(self, max_sessions: int = 64, min_timestamp: float | None = None) -> list[GenerationSpan]:
+        dbs = self._discover_session_dbs(max_sessions, min_timestamp=min_timestamp)
         spans: list[GenerationSpan] = []
 
         for db_path in dbs:
@@ -224,6 +233,8 @@ class AntigravityAdapter(BaseAdapter):
                         t_end = parse_proto_timestamp(f7)
                         if t_start is None or t_end is None or t_end <= t_start:
                             continue
+                        if min_timestamp is not None and t_end < min_timestamp:
+                            continue
 
                         u_dict = {
                             f[0]: f[2]
@@ -253,8 +264,8 @@ class AntigravityAdapter(BaseAdapter):
         spans.sort(key=lambda s: s.ended_at)
         return spans
 
-    def collect_sessions(self, max_sessions: int = 32) -> list[SessionTimeline]:
-        dbs = self._discover_session_dbs(max_sessions)
+    def collect_sessions(self, max_sessions: int = 32, min_timestamp: float | None = None) -> list[SessionTimeline]:
+        dbs = self._discover_session_dbs(max_sessions, min_timestamp=min_timestamp)
         timelines: list[SessionTimeline] = []
 
         for p in dbs:

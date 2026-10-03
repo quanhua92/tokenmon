@@ -86,22 +86,22 @@ class CodexAdapter(BaseAdapter):
             or find_newest_db(r, "logs") is not None
         )
 
-    def collect(self, max_sessions: int = 64) -> list[GenerationSpan]:
+    def collect(self, max_sessions: int = 64, min_timestamp: float | None = None) -> list[GenerationSpan]:
         if not self.root.exists():
             return []
 
-        item_starts = self._load_diagnostic_starts()
-        sessions = self._discover_sessions(max_sessions)
+        item_starts = self._load_diagnostic_starts(min_timestamp=min_timestamp)
+        sessions = self._discover_sessions(max_sessions, min_timestamp=min_timestamp)
 
         all_spans: list[GenerationSpan] = []
         for session_id, jsonl_path, default_model in sessions:
-            spans = self._parse_session_file(session_id, jsonl_path, default_model, item_starts)
+            spans = self._parse_session_file(session_id, jsonl_path, default_model, item_starts, min_timestamp=min_timestamp)
             all_spans.extend(spans)
 
         all_spans.sort(key=lambda s: s.ended_at)
         return all_spans
 
-    def _load_diagnostic_starts(self, max_entries: int = 100000) -> dict[str, float]:
+    def _load_diagnostic_starts(self, max_entries: int = 100000, min_timestamp: float | None = None) -> dict[str, float]:
         starts: dict[str, float] = {}
         logs_db = find_newest_db(self.root, "logs")
         if not logs_db:
@@ -124,6 +124,8 @@ class CodexAdapter(BaseAdapter):
             at = parse_timestamp(ts_str)
             if at is None:
                 continue
+            if min_timestamp is not None and at < min_timestamp:
+                continue
 
             _, _, tail = body.rpartition(": ")
             tail = tail or body
@@ -134,7 +136,7 @@ class CodexAdapter(BaseAdapter):
 
         return starts
 
-    def _discover_sessions(self, max_sessions: int) -> list[tuple[str, Path, str]]:
+    def _discover_sessions(self, max_sessions: int, min_timestamp: float | None = None) -> list[tuple[str, Path, str]]:
         found: list[tuple[str, Path, str]] = []
         state_db = find_newest_db(self.root, "state")
 
@@ -143,10 +145,17 @@ class CodexAdapter(BaseAdapter):
                 with closing(open_ro_db(state_db)) as conn:
                     cols = {r[1] for r in conn.execute("PRAGMA table_info(threads)")}
                     opt_model = "model" if "model" in cols else "NULL AS model"
+                    where_clause = "WHERE archived = 0"
+                    params: list[object] = []
+                    if min_timestamp is not None:
+                        where_clause += " AND updated_at >= ?"
+                        params.append(int(min_timestamp))
+                    params.append(max_sessions)
+
                     rows = conn.execute(
                         f"SELECT id, rollout_path, {opt_model} FROM threads "
-                        f"WHERE archived = 0 ORDER BY updated_at DESC LIMIT ?",
-                        (max_sessions,),
+                        f"{where_clause} ORDER BY updated_at DESC LIMIT ?",
+                        tuple(params),
                     ).fetchall()
                     for task_id, path_str, model in rows:
                         if path_str:
@@ -159,8 +168,11 @@ class CodexAdapter(BaseAdapter):
         if not found:
             sessions_dir = self.root / "sessions"
             if sessions_dir.exists():
+                all_files = list(sessions_dir.glob("**/*.jsonl"))
+                if min_timestamp is not None:
+                    all_files = [p for p in all_files if p.stat().st_mtime >= min_timestamp]
                 candidates = sorted(
-                    sessions_dir.glob("**/*.jsonl"),
+                    all_files,
                     key=lambda p: p.stat().st_mtime,
                     reverse=True,
                 )
@@ -175,6 +187,7 @@ class CodexAdapter(BaseAdapter):
         jsonl_path: Path,
         default_model: str,
         diag_starts: dict[str, float],
+        min_timestamp: float | None = None,
     ) -> list[GenerationSpan]:
         spans: list[GenerationSpan] = []
         model = default_model
@@ -198,6 +211,8 @@ class CodexAdapter(BaseAdapter):
                     val = record.get("payload")
                     at = parse_timestamp(record.get("timestamp"))
                     if not isinstance(val, dict) or at is None:
+                        continue
+                    if min_timestamp is not None and at < min_timestamp:
                         continue
 
                     kind = record.get("type")
@@ -366,11 +381,11 @@ class CodexAdapter(BaseAdapter):
             )
         )
 
-    def collect_sessions(self, max_sessions: int = 32) -> list[SessionTimeline]:
+    def collect_sessions(self, max_sessions: int = 32, min_timestamp: float | None = None) -> list[SessionTimeline]:
         if not self.root.exists():
             return []
 
-        sessions = self._discover_sessions(max_sessions)
+        sessions = self._discover_sessions(max_sessions, min_timestamp=min_timestamp)
         timelines: list[SessionTimeline] = []
         for session_id, jsonl_path, default_model in sessions:
             timeline = self._parse_session_timeline(session_id, jsonl_path, default_model)
