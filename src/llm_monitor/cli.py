@@ -213,12 +213,15 @@ def format_session_card(t: SessionTimeline, now: float) -> str:
         status_badge = f"\033[2m◌ {status_raw}\033[0m"
 
     tool_part = f", {t.tool_calls} tools" if t.tool_calls > 0 else ""
-    user_part = f"👤 User: {t.user_messages} prompt{'s' if t.user_messages != 1 else ''}"
-    agent_part = f"🤖 Agent: {t.assistant_messages} turns{tool_part} ({tok_str} tok)"
+    user_part = f"👤 User:      {t.user_messages} prompt{'s' if t.user_messages != 1 else ''}"
+    agent_part = f"🤖 Assistant: {t.assistant_messages} turns{tool_part} ({tok_str} tok)"
+    time_part = f"⏱️ Elapsed:   {dur_str}"
 
     lines = [
         f"  📌 \033[1m{t.session_id[:12]}\033[0m  ({t.model})  {status_badge}",
-        f"     {user_part}  │  {agent_part}  │  ⏱️ {dur_str} elapsed",
+        f"     {user_part}",
+        f"     {agent_part}",
+        f"     {time_part}",
     ]
     return "\n".join(lines)
 
