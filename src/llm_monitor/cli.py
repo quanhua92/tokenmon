@@ -159,6 +159,32 @@ def format_sessions_table(
     return "\n".join(lines)
 
 
+def format_recent_span(s: GenerationSpan, compact: bool | None = None) -> str:
+    if compact is None:
+        term_cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+        compact = term_cols < 88
+
+    dt = datetime.fromtimestamp(s.ended_at, tz=timezone.utc).astimezone()
+    tps_val = s.tps or 0.0
+
+    if compact:
+        t_str = dt.strftime("%H:%M:%S")
+        m_str = s.model[:12]
+        return (
+            f"  {t_str}  {m_str:<12}  "
+            f"\033[1;32m{tps_val:5.1f} TPS\033[0m  "
+            f"({s.tokens:,} tok / {s.duration:.1f}s)"
+        )
+    else:
+        t_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+        return (
+            f"  [{t_str}] {s.model:<18} : "
+            f"\033[1;32m{tps_val:6.1f} TPS\033[0m  "
+            f"({s.tokens:5d} tokens in {s.duration:5.2f}s) "
+            f"[{s.timing_source}]"
+        )
+
+
 def format_timeline_view(timeline: SessionTimeline, now: float) -> str:
     lines = [
         f"🔍 Session Timeline: \033[1m{timeline.session_id}\033[0m ({timeline.model})",
@@ -429,28 +455,8 @@ def main() -> int:
     if valid_spans and args.recent > 0:
         recent_count = min(args.recent, len(valid_spans))
         print(f"📋 Recent {recent_count} Generation Streams:")
-        term_cols = shutil.get_terminal_size(fallback=(80, 24)).columns
-        is_narrow = (term_cols < 88 and not args.wide) or args.compact
-
         for s in valid_spans[-recent_count:]:
-            dt = datetime.fromtimestamp(s.ended_at, tz=timezone.utc).astimezone()
-            if is_narrow:
-                t_str = dt.strftime("%H:%M:%S")
-                m_str = s.model[:14]
-                print(
-                    f"  [{t_str}] {m_str:<14} : "
-                    f"\033[1;32m{s.tps:5.1f} TPS\033[0m "
-                    f"({s.tokens} tok in {s.duration:.1f}s) "
-                    f"[{s.timing_source}]"
-                )
-            else:
-                t_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                print(
-                    f"  [{t_str}] {s.model:<18} : "
-                    f"\033[1;32m{s.tps:6.1f} TPS\033[0m  "
-                    f"({s.tokens:5d} tokens in {s.duration:5.2f}s) "
-                    f"[{s.timing_source}]"
-                )
+            print(format_recent_span(s, compact=compact_flag))
         print()
 
     return 0

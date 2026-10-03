@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from llm_monitor import __version__
 from llm_monitor.adapters import BaseAdapter, detect_available_adapters, get_adapter
 from llm_monitor.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
-from llm_monitor.cli import format_sessions_table, format_table, format_timeline_view
+from llm_monitor.cli import format_recent_span, format_sessions_table, format_table, format_timeline_view
 from llm_monitor.models import GenerationSpan, SessionTimeline
 
 
@@ -142,14 +142,7 @@ Alias: r"""
 
         print(f"\n📋 Last {min(count, len(valid_spans))} Generation Streams:")
         for s in valid_spans[-count:]:
-            dt = datetime.fromtimestamp(s.ended_at, tz=timezone.utc).astimezone()
-            t_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-            print(
-                f"  [{t_str}] {s.model:<18} : "
-                f"\033[1;32m{s.tps:6.1f} TPS\033[0m  "
-                f"({s.tokens:5d} tokens in {s.duration:5.2f}s) "
-                f"[{s.timing_source}]"
-            )
+            print(format_recent_span(s))
         print()
 
     do_r = do_recent
