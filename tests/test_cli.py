@@ -15,6 +15,7 @@ class TestCLIIntegration(unittest.TestCase):
         sessions_dir.mkdir()
         session_file = sessions_dir / "cli_test.jsonl"
         records = [
+            {"type": "session_meta", "payload": {"id": "cli_test", "cwd": "/tmp/demo-project"}, "timestamp": "2026-10-03T09:59:59Z"},
             {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-1"}, "timestamp": "2026-10-03T10:00:00Z"},
             {"type": "turn_context", "payload": {"turn_id": "turn-1", "model": "gpt-5"}, "timestamp": "2026-10-03T10:00:01Z"},
             {"type": "response_item", "payload": {"type": "message", "role": "assistant", "id": "item-1"}, "timestamp": "2026-10-03T10:00:02Z"},
@@ -212,6 +213,31 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertEqual(res_wide.returncode, 0)
         self.assertIn("Time (s)", res_wide.stdout)
         self.assertIn("Range", res_wide.stdout)
+
+    def test_cli_json_includes_session_cwd(self):
+        base = ["python3", "-m", "llm_monitor"]
+        tail = ["codex", "--home", str(self.root), "--json", "--all"]
+
+        res = subprocess.run(base + ["ps"] + tail, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(json.loads(res.stdout)[0]["cwd"], "/tmp/demo-project")
+
+        res = subprocess.run(base + ["logs"] + tail, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(json.loads(res.stdout)["cwd"], "/tmp/demo-project")
+
+        res = subprocess.run(base + ["stats"] + tail, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(json.loads(res.stdout)["recent_sessions"][0]["cwd"], "/tmp/demo-project")
+
+    def test_cli_all_lists_each_adapter_once(self):
+        (self.root / "conversations").mkdir()  # makes the Antigravity adapter detectable
+        cmd = ["python3", "-m", "llm_monitor", "stats", "all", "--home", str(self.root), "--json", "--all"]
+        res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res.returncode, 0)
+        agents = json.loads(res.stdout)["meta"]["agents"]
+        self.assertEqual(len(agents), len(set(agents)))
+        self.assertIn("antigravity", agents)
 
     def test_cli_ascii_banner(self):
         # Human mode should display the ASCII banner

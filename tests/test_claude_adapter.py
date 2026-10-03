@@ -130,6 +130,46 @@ class TestClaudeAdapter(unittest.TestCase):
         self.assertEqual(t.tool_calls, 1)
         self.assertEqual(t.total_tokens, 80)
 
+    def test_timeline_cwd_from_records(self):
+        projects = self.root / "projects" / "test-cwd"
+        projects.mkdir(parents=True)
+        with (projects / "session-cwd.jsonl").open("w") as f:
+            f.write(json.dumps({"type": "summary", "cwd": "/tmp/demo-project"}) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "cwd": "/tmp/other",
+                        "message": {"role": "user", "content": "hi"},
+                        "timestamp": "2026-05-20T06:01:50.000Z",
+                        "uuid": "u-1",
+                    }
+                )
+                + "\n"
+            )
+
+        t = ClaudeAdapter(self.root).collect_sessions()[0]
+        self.assertEqual(t.cwd, "/tmp/demo-project")  # first one wins, even on a record with no timestamp
+
+    def test_timeline_cwd_missing_is_none(self):
+        projects = self.root / "projects" / "test-nocwd"
+        projects.mkdir(parents=True)
+        with (projects / "session-nocwd.jsonl").open("w") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "message": {"role": "user", "content": "hi"},
+                        "timestamp": "2026-05-20T06:01:50.000Z",
+                        "uuid": "u-1",
+                    }
+                )
+                + "\n"
+            )
+
+        t = ClaudeAdapter(self.root).collect_sessions()[0]
+        self.assertIsNone(t.cwd)
+
     def test_duration_under_1s_is_excluded(self):
         projects = self.root / "projects" / "test-fast"
         projects.mkdir(parents=True)

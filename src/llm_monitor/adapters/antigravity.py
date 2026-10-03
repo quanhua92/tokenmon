@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -10,6 +11,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from llm_monitor.adapters.base import BaseAdapter
 from llm_monitor.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
@@ -444,4 +446,39 @@ class AntigravityAdapter(BaseAdapter):
             created_at=created_at,
             updated_at=updated_at,
             events=events,
+            cwd=self._workspace_path(session_id),
         )
+
+    def _workspace_path(self, session_id: str) -> str | None:
+        """Look up the workspace folder for a session from conversation_summaries.db.
+
+        The `workspace_uris` column holds a JSON array of file:// URIs and may be empty.
+        Returns the first workspace as a plain filesystem path, or None if unknown.
+        """
+        summary_db = self.root / "conversation_summaries.db"
+        if not summary_db.is_file():
+            return None
+        try:
+            with closing(open_ro_db(summary_db)) as conn:
+                row = conn.execute(
+                    "SELECT workspace_uris FROM conversation_summaries WHERE conversation_id = ?",
+                    (session_id,),
+                ).fetchone()
+        except Exception as e:
+            logger.debug("Antigravity: could not read workspace for '%s': %s", session_id, e)
+            return None
+
+        if not row or not row[0]:
+            return None
+        try:
+            uris = json.loads(row[0])
+        except Exception:
+            return None
+        if not isinstance(uris, list):
+            return None
+        for uri in uris:
+            if isinstance(uri, str) and uri.startswith("file://"):
+                path = unquote(urlparse(uri).path)
+                if path:
+                    return path
+        return None

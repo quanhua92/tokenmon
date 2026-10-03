@@ -51,6 +51,33 @@ class TestAntigravityAdapter(unittest.TestCase):
         timelines = adapter.collect_sessions()
         self.assertEqual(len(timelines), 0)
 
+    def _make_summary_db(self, rows):
+        conn = sqlite3.connect(str(self.temp_dir / "conversation_summaries.db"))
+        conn.execute("CREATE TABLE conversation_summaries (conversation_id text, workspace_uris text);")
+        conn.executemany("INSERT INTO conversation_summaries VALUES (?, ?)", rows)
+        conn.commit()
+        conn.close()
+
+    def test_workspace_path_from_summaries(self):
+        self._make_summary_db(
+            [
+                ("a", '["file:///tmp/my%20project"]'),
+                ("b", ""),
+                ("c", "not json"),
+                ("d", '["https://example.com", "file:///tmp/second"]'),
+            ]
+        )
+        adapter = AntigravityAdapter(root=self.temp_dir)
+        self.assertEqual(adapter._workspace_path("a"), "/tmp/my project")  # URL-decoded
+        self.assertIsNone(adapter._workspace_path("b"))  # empty value
+        self.assertIsNone(adapter._workspace_path("c"))  # unparseable value
+        self.assertEqual(adapter._workspace_path("d"), "/tmp/second")  # skips non-file URIs
+        self.assertIsNone(adapter._workspace_path("missing"))  # no row
+
+    def test_workspace_path_without_summary_db(self):
+        adapter = AntigravityAdapter(root=self.temp_dir)
+        self.assertIsNone(adapter._workspace_path("anything"))
+
 
 if __name__ == "__main__":
     unittest.main()

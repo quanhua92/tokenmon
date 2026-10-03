@@ -140,6 +140,7 @@ class SessionTimeline:
     created_at: float
     updated_at: float
     events: list[TimelineEvent] = field(default_factory=list)
+    cwd: str | None = None  # Working directory of the session, if the agent records it
 
     @property
     def user_messages(self) -> int:

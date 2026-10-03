@@ -264,6 +264,18 @@ ASCII_LOGO = r"""
 """.strip("\n")
 
 
+STATS_GUIDE = """\
+📖 How to read this
+  • TPS is output tokens per second of pure generation. Tool runs and waiting are not counted.
+  • TPS in the table is total tokens ÷ total seconds, not an average of per-stream speeds.
+  • Outputs "valid/total": streams under 1s or with unclear timing count in total but not in TPS.
+  • Median is the middle stream. It is less affected by one very slow or very fast stream.
+  • Windows are 30m, 1d, 7d and 30d. Use --window to pick one, or --all for full history.
+
+➡️  Next: `llm-monitor ps` lists sessions · `llm-monitor logs` shows a timeline · add --json for scripts.
+"""
+
+
 def print_banner(color: bool = True) -> None:
     """Print a compact, modern ASCII banner suitable for standard and narrow split panes."""
     lines = ASCII_LOGO.splitlines()
@@ -518,7 +530,11 @@ def main() -> int:
             return 1
         adapters.append(target)
     elif agent_target and agent_target.lower() == "all":
+        seen_classes: set[type] = set()
         for cls in ADAPTER_REGISTRY.values():
+            if cls in seen_classes:  # aliases (e.g. 'agy') share a class
+                continue
+            seen_classes.add(cls)
             inst = cls(root=args.home)
             if inst.detect():
                 adapters.append(inst)
@@ -571,6 +587,7 @@ def main() -> int:
             return {
                 "session_id": t.session_id,
                 "agent": t.agent,
+                "cwd": t.cwd,
                 "model": t.model,
                 "created_at": t.created_at,
                 "updated_at": t.updated_at,
@@ -645,6 +662,7 @@ def main() -> int:
                 {
                     "session_id": t.session_id,
                     "agent": t.agent,
+                    "cwd": t.cwd,
                     "model": t.model,
                     "created_at": t.created_at,
                     "updated_at": t.updated_at,
@@ -759,6 +777,7 @@ def main() -> int:
             {
                 "session_id": t.session_id,
                 "agent": t.agent,
+                "cwd": t.cwd,
                 "model": t.model,
                 "status": t.status(now),
                 "user_messages": t.user_messages,
@@ -821,6 +840,7 @@ def main() -> int:
         latest_id = timelines[0].session_id[:12]
         print(f"💡 Tip: Run `llm-monitor timeline {latest_id}` for full step-by-step chronology.\n")
 
+    print(STATS_GUIDE)
     return 0
 
 

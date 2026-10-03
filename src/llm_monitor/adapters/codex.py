@@ -413,6 +413,7 @@ class CodexAdapter(BaseAdapter):
         events: list[TimelineEvent] = []
         model = default_model
         turn_id = ""
+        cwd: str | None = None
 
         try:
             with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
@@ -432,6 +433,11 @@ class CodexAdapter(BaseAdapter):
 
                     kind = record.get("type")
                     event = val.get("type")
+
+                    if cwd is None and kind in {"session_meta", "turn_context"}:
+                        c = val.get("cwd")
+                        if isinstance(c, str) and c:
+                            cwd = c
 
                     if kind == "turn_context":
                         t = val.get("turn_id")
@@ -551,4 +557,5 @@ class CodexAdapter(BaseAdapter):
             created_at=created_at,
             updated_at=updated_at,
             events=events,
+            cwd=cwd,
         )

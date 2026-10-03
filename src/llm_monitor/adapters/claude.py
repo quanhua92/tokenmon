@@ -193,6 +193,7 @@ class ClaudeAdapter(BaseAdapter):
         events: list[TimelineEvent] = []
         model = "claude"
         seen_assistant_ids: set[str] = set()
+        cwd: str | None = None
 
         try:
             with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
@@ -204,6 +205,11 @@ class ClaudeAdapter(BaseAdapter):
                         rec = json.loads(line)
                     except Exception:
                         continue
+
+                    if cwd is None:
+                        c = rec.get("cwd")
+                        if isinstance(c, str) and c:
+                            cwd = c
 
                     rec_type = rec.get("type")
                     at = parse_iso_timestamp(rec.get("timestamp"))
@@ -330,4 +336,5 @@ class ClaudeAdapter(BaseAdapter):
             created_at=created_at,
             updated_at=updated_at,
             events=events,
+            cwd=cwd,
         )
