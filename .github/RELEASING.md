@@ -26,7 +26,7 @@ To release:
    `src/tokenmon/__init__.py`, refresh `uv.lock` with `uv lock`, and merge to `main`
    after CI passes. The workflow checks versions; it does not change them.
 2. Open **Actions → Publish to PyPI → Run workflow**, select `main`, and enter the
-   exact version, such as `0.1.1`.
+   exact version, such as `0.1.2`.
 3. Review the built distributions in the workflow artifact, then approve the `pypi`
    deployment. PyPI rejects uploading an already published distribution again.
 

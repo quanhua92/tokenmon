@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.2] — 2026-10-04
 
 - Add `stats -w` / `--watch` with a configurable `--interval` (default: 2 seconds).
 - Share the stats dashboard with interactive watch, including recent generation streams and session cards.
@@ -29,5 +29,6 @@ Initial public release of TokenMon.
 - Read agent logs and SQLite databases without modifying them.
 - Add CI checks and manual PyPI trusted publishing.
 
+[0.1.2]: https://github.com/quanhua92/tokenmon/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/quanhua92/tokenmon/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/quanhua92/tokenmon/releases/tag/v0.1.0
