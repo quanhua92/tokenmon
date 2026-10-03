@@ -1,6 +1,6 @@
 [project]
 name = "tokenmon"
-version = "0.1.0"
+version = "0.1.1"
 description = "A fast, zero-dependency command-line monitor for local AI coding agents."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -11,6 +11,7 @@ tokenmon = "tokenmon.cli:main"
 
 [project.urls]
 Repository = "https://github.com/quanhua92/tokenmon"
+Changelog = "https://github.com/quanhua92/tokenmon/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
