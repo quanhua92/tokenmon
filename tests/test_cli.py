@@ -114,6 +114,28 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("USER", res.stdout)
         self.assertIn("ASSISTANT", res.stdout)
 
+    def test_cli_timeline_window_export(self):
+        cmd = [
+            "python3",
+            "-m",
+            "llm_monitor",
+            "codex",
+            "--home",
+            str(self.root),
+            "--timeline",
+            "--window",
+            "1d",
+            "--json",
+            "--all",
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res.returncode, 0)
+        data = json.loads(res.stdout)
+        self.assertIsInstance(data, list)
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["session_id"], "cli_test")
+        self.assertIn("events", data[0])
+
     def test_cli_compact_and_wide_flags(self):
         # Test --compact flag
         cmd_compact = [

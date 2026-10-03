@@ -369,15 +369,65 @@ def main() -> int:
 
     now = time.time()
 
+    # Compute cutoff timestamp (default 30 days unless --all or window is 'all')
+    min_ts: float | None = None
+    if not args.all and args.window != "all":
+        if args.window:
+            min_ts = now - WINDOW_DURATIONS[args.window]
+        else:
+            min_ts = now - (30 * 86400.0)
+
     # Handle --timeline mode
     if args.timeline:
         timelines = []
         for adapter in adapters:
-            timelines.extend(adapter.collect_sessions(max_sessions=args.tasks))
+            timelines.extend(adapter.collect_sessions(max_sessions=args.tasks, min_timestamp=min_ts))
         if not timelines:
             print("No sessions found to inspect timeline.", file=sys.stderr)
             return 1
 
+        def timeline_to_dict(t: SessionTimeline) -> dict:
+            return {
+                "session_id": t.session_id,
+                "agent": t.agent,
+                "model": t.model,
+                "created_at": t.created_at,
+                "updated_at": t.updated_at,
+                "user_messages": t.user_messages,
+                "assistant_messages": t.assistant_messages,
+                "tool_calls": t.tool_calls,
+                "total_tokens": t.total_tokens,
+                "duration_seconds": round(t.session_duration, 2),
+                "idle_time_seconds": round(t.idle_time(now), 2),
+                "status": t.status(now),
+                "events": [
+                    {
+                        "timestamp": ev.timestamp,
+                        "kind": ev.kind,
+                        "turn_id": ev.turn_id,
+                        "summary": ev.summary,
+                        "tokens": ev.tokens,
+                        "duration": ev.duration,
+                    }
+                    for ev in t.events
+                ],
+            }
+
+        # Multi-session timeline export when --window is explicitly set with default latest or 'window'
+        export_window = (args.window is not None and args.timeline in {"latest", "window"}) or (args.timeline == "window")
+
+        if export_window:
+            if args.json:
+                print(json.dumps([timeline_to_dict(t) for t in timelines], indent=2))
+                return 0
+
+            print(f"\n🔍 Session Timelines ({len(timelines)} sessions within window):\n")
+            for t in timelines:
+                print(format_timeline_view(t, now))
+                print("\n" + "─" * 60 + "\n")
+            return 0
+
+        # Single session timeline
         selected = None
         if args.timeline == "latest":
             selected = timelines[0]
@@ -391,46 +441,13 @@ def main() -> int:
                 return 1
 
         if args.json:
-            out = {
-                "session_id": selected.session_id,
-                "agent": selected.agent,
-                "model": selected.model,
-                "created_at": selected.created_at,
-                "updated_at": selected.updated_at,
-                "user_messages": selected.user_messages,
-                "assistant_messages": selected.assistant_messages,
-                "tool_calls": selected.tool_calls,
-                "total_tokens": selected.total_tokens,
-                "duration_seconds": round(selected.session_duration, 2),
-                "idle_time_seconds": round(selected.idle_time(now), 2),
-                "status": selected.status(now),
-                "events": [
-                    {
-                        "timestamp": ev.timestamp,
-                        "kind": ev.kind,
-                        "turn_id": ev.turn_id,
-                        "summary": ev.summary,
-                        "tokens": ev.tokens,
-                        "duration": ev.duration,
-                    }
-                    for ev in selected.events
-                ],
-            }
-            print(json.dumps(out, indent=2))
+            print(json.dumps(timeline_to_dict(selected), indent=2))
             return 0
 
         print()
         print(format_timeline_view(selected, now))
         print()
         return 0
-
-    # Compute cutoff timestamp (default 30 days unless --all or window is 'all')
-    min_ts: float | None = None
-    if not args.all and args.window != "all":
-        if args.window:
-            min_ts = now - WINDOW_DURATIONS[args.window]
-        else:
-            min_ts = now - (30 * 86400.0)
 
     # Handle --sessions mode
     if args.sessions:
