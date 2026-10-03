@@ -128,14 +128,14 @@ class ClaudeAdapter(BaseAdapter):
             usage = msg.get("usage", {})
             tokens = usage.get("output_tokens") or 0
 
-            # Multiple content blocks in the same message flushed within <0.25s
-            # are not streaming duration — they represent the same arrival instant.
+            # Any stream duration under 1.0s is excluded from speed metrics to avoid
+            # sub-second timestamp jitter and placeholder block flush distortion.
             chunk_dur = last_at - first_at
-            if len(chunks) > 1 and chunk_dur >= 0.25:
+            if len(chunks) > 1 and chunk_dur >= 1.0:
                 started_at = first_at
                 ended_at = last_at
                 timing_source = "chunk-stream"
-            elif req_start is not None and (last_at - req_start >= 0.2):
+            elif req_start is not None and (last_at - req_start >= 1.0):
                 started_at = req_start
                 ended_at = last_at
                 timing_source = "turn-span"
@@ -148,15 +148,14 @@ class ClaudeAdapter(BaseAdapter):
             is_valid = True
             note = None
 
-            if duration < 0.15:
+            if duration < 1.0:
                 is_valid = False
-                note = "sub_second_placeholder"
+                note = "duration_under_1s"
             elif tokens <= 0:
                 is_valid = False
                 note = "zero_tokens"
             elif (tokens / duration) > 400.0:
-                # Sanity ceiling: Speeds > 400 TPS indicate collapsed event boundaries
-                # rather than true model generation rate.
+                # Sanity ceiling: Speeds > 400 TPS indicate collapsed event boundaries.
                 is_valid = False
                 note = "unconfirmed_boundary_tps"
 

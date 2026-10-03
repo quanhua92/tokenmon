@@ -130,6 +130,43 @@ class TestClaudeAdapter(unittest.TestCase):
         self.assertEqual(t.tool_calls, 1)
         self.assertEqual(t.total_tokens, 80)
 
+    def test_duration_under_1s_is_excluded(self):
+        projects = self.root / "projects" / "test-fast"
+        projects.mkdir(parents=True)
+        session_file = projects / "session-fast.jsonl"
+
+        records = [
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "hi"},
+                "timestamp": "2026-05-20T06:01:50.000Z",
+                "uuid": "u-fast",
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg-fast",
+                    "role": "assistant",
+                    "model": "claude-3-7-sonnet",
+                    "content": [{"type": "text", "text": "Quick"}],
+                    "usage": {"output_tokens": 10},
+                },
+                "timestamp": "2026-05-20T06:01:50.400Z",
+                "uuid": "a-fast",
+            },
+        ]
+        with session_file.open("w") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+
+        adapter = ClaudeAdapter(self.root)
+        spans = adapter.collect()
+        self.assertEqual(len(spans), 1)
+        self.assertFalse(spans[0].is_valid)
+        self.assertEqual(spans[0].note, "duration_under_1s")
+        self.assertIsNone(spans[0].tps)
+
 
 if __name__ == "__main__":
     unittest.main()
+
