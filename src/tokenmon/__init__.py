@@ -1,3 +1,3 @@
 """tokenmon: Zero-dependency CLI monitor for local AI coding agent telemetry."""
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"

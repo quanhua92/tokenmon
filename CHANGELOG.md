@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.1.3] — 2026-10-04
+
 - Format stats duration as hours, minutes, and seconds while keeping JSON durations numeric.
 - Show optional recorded reasoning effort and speed mode on streams, sessions, and timeline events; include raw metadata in every JSON view and distinct configurations in stats windows.
 - Ignore repeated Codex cumulative usage snapshots instead of assigning previous response tokens to later reasoning.
@@ -38,6 +40,7 @@ Initial public release of TokenMon.
 - Read agent logs and SQLite databases without modifying them.
 - Add CI checks and manual PyPI trusted publishing.
 
+[0.1.3]: https://github.com/quanhua92/tokenmon/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/quanhua92/tokenmon/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/quanhua92/tokenmon/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/quanhua92/tokenmon/releases/tag/v0.1.0
