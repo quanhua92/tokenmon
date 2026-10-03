@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Type
 
+from llm_monitor.adapters.antigravity import AntigravityAdapter
 from llm_monitor.adapters.base import BaseAdapter
 from llm_monitor.adapters.claude import ClaudeAdapter
 from llm_monitor.adapters.codex import CodexAdapter
@@ -13,6 +14,8 @@ import time
 ADAPTER_REGISTRY: dict[str, Type[BaseAdapter]] = {
     "codex": CodexAdapter,
     "claude": ClaudeAdapter,
+    "antigravity": AntigravityAdapter,
+    "agy": AntigravityAdapter,
 }
 
 
@@ -35,7 +38,12 @@ def detect_available_adapters(max_age_days: float = 30.0, **kwargs) -> list[Base
     now = time.time()
     cutoff = now - (max_age_days * 86400.0)
 
+    # Iterate over unique adapter classes (avoiding duplicates from aliases)
+    seen_classes = set()
     for cls in ADAPTER_REGISTRY.values():
+        if cls in seen_classes:
+            continue
+        seen_classes.add(cls)
         instance = cls(**kwargs)
         if instance.detect():
             fallback.append(instance)
