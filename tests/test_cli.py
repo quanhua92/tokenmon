@@ -43,6 +43,7 @@ class TestCLIIntegration(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_cli_table_output(self):
+        # Test bare alias to stats
         cmd = [
             "python3",
             "-m",
@@ -58,11 +59,28 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("gpt-5", res.stdout)
         self.assertIn("60.0", res.stdout)
 
+        # Test explicit stats subcommand
+        cmd_stats = [
+            "python3",
+            "-m",
+            "llm_monitor",
+            "stats",
+            "codex",
+            "--home",
+            str(self.root),
+            "--window",
+            "all",
+        ]
+        res_stats = subprocess.run(cmd_stats, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res_stats.returncode, 0)
+        self.assertIn("gpt-5", res_stats.stdout)
+
     def test_cli_json_output(self):
         cmd = [
             "python3",
             "-m",
             "llm_monitor",
+            "stats",
             "codex",
             "--home",
             str(self.root),
@@ -87,10 +105,10 @@ class TestCLIIntegration(unittest.TestCase):
             "python3",
             "-m",
             "llm_monitor",
+            "sessions",
             "codex",
             "--home",
             str(self.root),
-            "--sessions",
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res.returncode, 0)
@@ -98,15 +116,29 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("cli_test", res.stdout)
         self.assertIn("gpt-5", res.stdout)
 
+        # Test Docker alias 'ps'
+        cmd_ps = [
+            "python3",
+            "-m",
+            "llm_monitor",
+            "ps",
+            "codex",
+            "--home",
+            str(self.root),
+        ]
+        res_ps = subprocess.run(cmd_ps, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res_ps.returncode, 0)
+        self.assertIn("Active & Recent Sessions", res_ps.stdout)
+
     def test_cli_timeline_view(self):
         cmd = [
             "python3",
             "-m",
             "llm_monitor",
-            "codex",
+            "timeline",
+            "cli_test",
             "--home",
             str(self.root),
-            "--timeline",
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res.returncode, 0)
@@ -114,19 +146,31 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("USER", res.stdout)
         self.assertIn("ASSISTANT", res.stdout)
 
+        # Test Docker alias 'logs' (default to latest)
+        cmd_logs = [
+            "python3",
+            "-m",
+            "llm_monitor",
+            "logs",
+            "--home",
+            str(self.root),
+        ]
+        res_logs = subprocess.run(cmd_logs, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res_logs.returncode, 0)
+        self.assertIn("Session Timeline", res_logs.stdout)
+
     def test_cli_timeline_window_export(self):
         cmd = [
             "python3",
             "-m",
             "llm_monitor",
-            "codex",
-            "--home",
-            str(self.root),
-            "--timeline",
+            "timeline",
             "--window",
             "1d",
             "--json",
             "--all",
+            "--home",
+            str(self.root),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res.returncode, 0)
@@ -137,11 +181,12 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("events", data[0])
 
     def test_cli_compact_and_wide_flags(self):
-        # Test --compact flag
+        # Test --compact flag with stats
         cmd_compact = [
             "python3",
             "-m",
             "llm_monitor",
+            "stats",
             "codex",
             "--home",
             str(self.root),
@@ -152,11 +197,12 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("TPS", res_compact.stdout)
         self.assertNotIn("Time (s)", res_compact.stdout)
 
-        # Test --wide flag
+        # Test --wide flag with stats
         cmd_wide = [
             "python3",
             "-m",
             "llm_monitor",
+            "stats",
             "codex",
             "--home",
             str(self.root),

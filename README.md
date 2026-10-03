@@ -38,92 +38,95 @@ uv run python -m unittest discover -s tests
 
 ## Usage
 
-### Auto-Detect & Monitor
-By default, `llm-monitor` automatically detects local agent data (e.g. `~/.codex`):
+`llm-monitor` follows an intuitive **Docker-style** CLI workflow with first-class subcommands and familiar aliases (`stats`/`top`, `sessions`/`ps`, `timeline`/`logs`, `interactive`/`repl`).
+
+Bare `llm-monitor` (with or without flags) directly defaults to `stats`.
+
+### Throughput & Performance (`stats`, `top`, default)
+Inspect rolling generation throughput (TPS), median speeds, and recent output streams:
 
 ```bash
+# Auto-detect local agents and show stats (default)
 uv run llm-monitor
+# or explicitly
+uv run llm-monitor stats
+
+# Filter to a specific rolling window (30m, 1d, 7d, 30d, all)
+uv run llm-monitor stats --window 1d
+
+# Include full history without 30-day cutoff
+uv run llm-monitor stats --all
+
+# Target a specific agent (codex, claude, antigravity) or custom path
+uv run llm-monitor stats codex
+uv run llm-monitor stats claude --home ~/.claude
+
+# Concise layout or wide diagnostic table
+uv run llm-monitor stats --compact
+uv run llm-monitor stats --wide
 ```
 
-### Time Window Filtering
-Filter telemetry to specific rolling windows:
+### Active & Recent Sessions (`sessions`, `ps`, `ls`)
+List active sessions, user turn counts, assistant responses, tool executions, and idle status:
 
 ```bash
-# 30-minute rolling window
-uv run llm-monitor --window 30m
+# List recent sessions
+uv run llm-monitor sessions
 
-# 24-hour rolling window
-uv run llm-monitor --window 1d
+# Or using the Docker alias 'ps'
+uv run llm-monitor ps
 
-# 7-day rolling window
-uv run llm-monitor --window 7d
+# Filter sessions within a rolling window
+uv run llm-monitor ps --window 1d
 
-# All-time window
-uv run llm-monitor --window all
+# Filter to a specific agent
+uv run llm-monitor ps codex
 ```
 
-### Inspect Recent Streams
-Display the latest generation streams with instantaneous speeds:
-
-```bash
-uv run llm-monitor --recent 20
-```
-
-### Session Activity & Unattended Status
-List all recent sessions, user prompts, assistant turns, tool executions, and whether a session is currently active or left unattended:
-
-```bash
-uv run llm-monitor --sessions
-```
-
-### Chronological Event Timeline
-View the full step-by-step chronology of user prompts, assistant answers, thinking, and tool runs for any session:
+### Chronological Event Timelines (`timeline`, `log`, `logs`)
+Inspect the chronological step-by-step event stream of user prompts, assistant thoughts/answers, tool executions, and turn completions:
 
 ```bash
 # View timeline of the latest session
-uv run llm-monitor --timeline
+uv run llm-monitor timeline
+# or using the Docker alias 'logs'
+uv run llm-monitor logs
 
-# View timeline of a specific session ID
-uv run llm-monitor --timeline 4a8b1c2d
+# View timeline of a specific session ID or prefix
+uv run llm-monitor timeline 01a10275
+uv run llm-monitor logs 01a10275
+
+# Batch export all session timelines within a window (e.g. today's sessions)
+uv run llm-monitor timeline --window 1d --json
 ```
 
-### Interactive Terminal Shell (`cmd.Cmd`)
-Launch an interactive REPL shell with tab completion and live monitoring:
+### Interactive Terminal Shell (`interactive`, `repl`, `shell`, `-i`)
+Launch an interactive shell with tab completion, query commands, and live auto-refresh dashboard:
 
 ```bash
-uv run llm-monitor -i
-# or
 uv run llm-monitor interactive
+# or
+uv run llm-monitor -i
 ```
 
 Inside the shell:
 ```text
 (llm-monitor) summary 30m        # view 30m throughput table
-(llm-monitor) sessions           # list active & unattended sessions
+(llm-monitor) sessions           # list active & inactive sessions
 (llm-monitor) timeline latest    # view step-by-step event timeline
 (llm-monitor) recent 15          # inspect recent generation speeds
 (llm-monitor) watch 2.0 1d       # live auto-refresh dashboard (Ctrl+C to return)
 (llm-monitor) help               # list all commands
 ```
 
-### Target a Specific Agent or Custom Data Path
-```bash
-# Target Codex specifically
-uv run llm-monitor codex
-uv run llm-monitor codex --home ~/.codex
-
-# Target Claude Code specifically
-uv run llm-monitor claude
-uv run llm-monitor claude --home ~/.claude
-```
-
-### JSON Output
-Pipe structured telemetry into scripts or monitoring dashboards:
+### Machine-Readable JSON Output
+All subcommands support `--json` for easy piping into `jq`, automated alerts, or reporting dashboards:
 
 ```bash
-uv run llm-monitor --json | jq .
-uv run llm-monitor --sessions --json | jq .
-uv run llm-monitor --timeline --json | jq .
+uv run llm-monitor stats --json | jq .
+uv run llm-monitor ps --json | jq .
+uv run llm-monitor logs 01a10275 --json | jq .
+uv run llm-monitor timeline --window 1d --json | jq .
 ```
 
 ---

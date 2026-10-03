@@ -259,86 +259,229 @@ def main() -> int:
         description="Monitor token throughput, session activity, and timelines for local AI coding agents.",
     )
     parser.add_argument(
-        "agent",
-        nargs="?",
-        default=None,
-        help=f"Target agent adapter ({', '.join(ADAPTER_REGISTRY.keys())}, or 'all'). Default: auto-detect.",
-    )
-    parser.add_argument(
-        "--window",
-        choices=["30m", "1d", "7d", "30d", "all"],
-        default=None,
-        help="Filter token throughput to a specific time window",
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Include full history ('all' window) in throughput summary tables",
-    )
-    parser.add_argument(
-        "--sessions",
-        action="store_true",
-        help="List recent sessions with user activity and unattended status",
-    )
-    parser.add_argument(
-        "--timeline",
-        nargs="?",
-        const="latest",
-        default=None,
-        metavar="SESSION_ID",
-        help="Display detailed chronological timeline of a session (default: latest)",
-    )
-    parser.add_argument(
-        "--tasks",
-        type=int,
-        default=64,
-        help="Maximum recent task sessions to inspect (default: 64)",
-    )
-    parser.add_argument(
-        "--recent",
-        type=int,
-        default=10,
-        help="Number of recent generation spans to display (default: 10)",
-    )
-    parser.add_argument(
-        "--home",
-        type=str,
-        default=None,
-        help="Override data root path for the selected agent adapter",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output raw machine-readable JSON",
-    )
-    parser.add_argument(
-        "-i",
-        "--interactive",
-        action="store_true",
-        help="Launch interactive terminal shell (using stdlib cmd)",
-    )
-    parser.add_argument(
-        "--compact",
-        action="store_true",
-        help="Use concise, narrow table layout suited for small screens or split panes",
-    )
-    parser.add_argument(
-        "--wide",
-        action="store_true",
-        help="Force full-width table layout with all diagnostic columns",
-    )
-    parser.add_argument(
         "-v",
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
     )
-    args = parser.parse_args()
+
+    subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
+
+    # 1. stats (default, aliases: top)
+    p_stats = subparsers.add_parser(
+        "stats",
+        aliases=["top"],
+        help="Display token throughput (TPS) and rolling window metrics (default)",
+    )
+    p_stats.add_argument(
+        "agent",
+        nargs="?",
+        default=None,
+        help=f"Target agent adapter ({', '.join(ADAPTER_REGISTRY.keys())}, or 'all'). Default: auto-detect.",
+    )
+    p_stats.add_argument("-a", "--agent", dest="agent_opt", default=None, help=argparse.SUPPRESS)
+    p_stats.add_argument(
+        "-w",
+        "--window",
+        choices=["30m", "1d", "7d", "30d", "all"],
+        default=None,
+        help="Filter token throughput to a specific time window",
+    )
+    p_stats.add_argument(
+        "--all",
+        action="store_true",
+        help="Include full history ('all' window) in throughput summary tables",
+    )
+    p_stats.add_argument(
+        "--tasks",
+        type=int,
+        default=64,
+        help="Maximum recent task sessions to inspect (default: 64)",
+    )
+    p_stats.add_argument(
+        "--recent",
+        type=int,
+        default=10,
+        help="Number of recent generation spans to display (default: 10)",
+    )
+    p_stats.add_argument(
+        "--home",
+        type=str,
+        default=None,
+        help="Override data root path for the selected agent adapter",
+    )
+    p_stats.add_argument(
+        "--compact",
+        action="store_true",
+        help="Use concise, narrow table layout suited for small screens or split panes",
+    )
+    p_stats.add_argument(
+        "--wide",
+        action="store_true",
+        help="Force full-width table layout with all diagnostic columns",
+    )
+    p_stats.add_argument(
+        "--json",
+        action="store_true",
+        help="Output raw machine-readable JSON",
+    )
+
+    # 2. sessions (aliases: ps, ls)
+    p_sessions = subparsers.add_parser(
+        "sessions",
+        aliases=["ps", "ls"],
+        help="List active and recent agent sessions with user activity and idle status",
+    )
+    p_sessions.add_argument(
+        "agent",
+        nargs="?",
+        default=None,
+        help=f"Target agent adapter ({', '.join(ADAPTER_REGISTRY.keys())}, or 'all'). Default: auto-detect.",
+    )
+    p_sessions.add_argument("-a", "--agent", dest="agent_opt", default=None, help=argparse.SUPPRESS)
+    p_sessions.add_argument(
+        "-w",
+        "--window",
+        choices=["30m", "1d", "7d", "30d", "all"],
+        default=None,
+        help="Filter sessions to a specific time window",
+    )
+    p_sessions.add_argument(
+        "--all",
+        action="store_true",
+        help="Include full history without 30-day cutoff",
+    )
+    p_sessions.add_argument(
+        "--tasks",
+        type=int,
+        default=64,
+        help="Maximum recent task sessions to inspect (default: 64)",
+    )
+    p_sessions.add_argument(
+        "--home",
+        type=str,
+        default=None,
+        help="Override data root path for the selected agent adapter",
+    )
+    p_sessions.add_argument(
+        "--compact",
+        action="store_true",
+        help="Use concise, narrow table layout suited for small screens or split panes",
+    )
+    p_sessions.add_argument(
+        "--wide",
+        action="store_true",
+        help="Force full-width table layout with all diagnostic columns",
+    )
+    p_sessions.add_argument(
+        "--json",
+        action="store_true",
+        help="Output raw machine-readable JSON",
+    )
+
+    # 3. timeline (aliases: log, logs)
+    p_timeline = subparsers.add_parser(
+        "timeline",
+        aliases=["log", "logs"],
+        help="Display detailed chronological event timeline for a session (or batch window export)",
+    )
+    p_timeline.add_argument(
+        "session_id",
+        nargs="?",
+        default="latest",
+        help="Session ID or prefix to inspect (default: latest)",
+    )
+    p_timeline.add_argument("-a", "--agent", dest="agent_opt", default=None, help="Target agent adapter")
+    p_timeline.add_argument(
+        "-w",
+        "--window",
+        choices=["30m", "1d", "7d", "30d", "all"],
+        default=None,
+        help="Export timelines for all sessions in time window",
+    )
+    p_timeline.add_argument(
+        "--all",
+        action="store_true",
+        help="Include full history without 30-day cutoff",
+    )
+    p_timeline.add_argument(
+        "--tasks",
+        type=int,
+        default=64,
+        help="Maximum recent task sessions to inspect (default: 64)",
+    )
+    p_timeline.add_argument(
+        "--home",
+        type=str,
+        default=None,
+        help="Override data root path for the selected agent adapter",
+    )
+    p_timeline.add_argument(
+        "--json",
+        action="store_true",
+        help="Output raw machine-readable JSON",
+    )
+
+    # 4. interactive (aliases: repl, shell)
+    p_interactive = subparsers.add_parser(
+        "interactive",
+        aliases=["repl", "shell"],
+        help="Launch interactive terminal shell (using stdlib cmd)",
+    )
+    p_interactive.add_argument(
+        "agent",
+        nargs="?",
+        default=None,
+        help=f"Target agent adapter ({', '.join(ADAPTER_REGISTRY.keys())}, or 'all'). Default: auto-detect.",
+    )
+    p_interactive.add_argument("-a", "--agent", dest="agent_opt", default=None, help=argparse.SUPPRESS)
+    p_interactive.add_argument(
+        "--home",
+        type=str,
+        default=None,
+        help="Override data root path for the selected agent adapter",
+    )
+
+    raw_args = list(sys.argv[1:])
+    known_cmds = {
+        "stats", "top",
+        "sessions", "ps", "ls",
+        "timeline", "log", "logs",
+        "interactive", "repl", "shell",
+        "-h", "--help", "-v", "--version",
+    }
+
+    if "-i" in raw_args or "--interactive" in raw_args:
+        filtered = [a for a in raw_args if a not in ("-i", "--interactive")]
+        raw_args = ["interactive"] + filtered
+    elif not raw_args:
+        raw_args = ["stats"]
+    elif raw_args[0] not in known_cmds:
+        raw_args.insert(0, "stats")
+
+    args = parser.parse_args(raw_args)
+
+    cmd = args.command
+    if cmd in {"top"}:
+        cmd = "stats"
+    elif cmd in {"ps", "ls"}:
+        cmd = "sessions"
+    elif cmd in {"log", "logs"}:
+        cmd = "timeline"
+    elif cmd in {"repl", "shell"}:
+        cmd = "interactive"
 
     # Determine which adapters to run
     adapters = []
-    is_interactive_cmd = args.agent and args.agent.lower() in {"interactive", "repl", "shell"}
-    agent_target = None if is_interactive_cmd else args.agent
+    agent_target = getattr(args, "agent_opt", None) or getattr(args, "agent", None)
+
+    if cmd == "timeline":
+        session_target = getattr(args, "session_id", "latest")
+        if session_target and session_target.lower() in ADAPTER_REGISTRY and not agent_target:
+            agent_target = session_target.lower()
+            session_target = "latest"
+    else:
+        session_target = None
 
     if agent_target and agent_target.lower() != "all":
         target = get_adapter(agent_target, root=args.home)
@@ -363,7 +506,7 @@ def main() -> int:
         adapters.extend(detected)
 
     # Handle interactive shell
-    if args.interactive or is_interactive_cmd:
+    if cmd == "interactive":
         from llm_monitor.terminal import run_shell
         return run_shell(adapters, home=args.home)
 
@@ -371,14 +514,16 @@ def main() -> int:
 
     # Compute cutoff timestamp (default 30 days unless --all or window is 'all')
     min_ts: float | None = None
-    if not args.all and args.window != "all":
-        if args.window:
-            min_ts = now - WINDOW_DURATIONS[args.window]
+    window_val = getattr(args, "window", None)
+    all_val = getattr(args, "all", False)
+    if not all_val and window_val != "all":
+        if window_val:
+            min_ts = now - WINDOW_DURATIONS[window_val]
         else:
             min_ts = now - (30 * 86400.0)
 
-    # Handle --timeline mode
-    if args.timeline:
+    # Handle timeline command
+    if cmd == "timeline":
         timelines = []
         for adapter in adapters:
             timelines.extend(adapter.collect_sessions(max_sessions=args.tasks, min_timestamp=min_ts))
@@ -414,7 +559,7 @@ def main() -> int:
             }
 
         # Multi-session timeline export when --window is explicitly set with default latest or 'window'
-        export_window = (args.window is not None and args.timeline in {"latest", "window"}) or (args.timeline == "window")
+        export_window = (window_val is not None and session_target in {"latest", "window"}) or (session_target == "window")
 
         if export_window:
             if args.json:
@@ -429,15 +574,15 @@ def main() -> int:
 
         # Single session timeline
         selected = None
-        if args.timeline == "latest":
+        if session_target == "latest":
             selected = timelines[0]
         else:
             for t in timelines:
-                if t.session_id.startswith(args.timeline) or args.timeline in t.session_id:
+                if t.session_id.startswith(session_target) or session_target in t.session_id:
                     selected = t
                     break
             if not selected:
-                print(f"Error: Session matching '{args.timeline}' not found.", file=sys.stderr)
+                print(f"Error: Session matching '{session_target}' not found.", file=sys.stderr)
                 return 1
 
         if args.json:
@@ -449,8 +594,8 @@ def main() -> int:
         print()
         return 0
 
-    # Handle --sessions mode
-    if args.sessions:
+    # Handle sessions command
+    if cmd == "sessions":
         timelines = []
         for adapter in adapters:
             timelines.extend(adapter.collect_sessions(max_sessions=args.tasks, min_timestamp=min_ts))
@@ -480,7 +625,7 @@ def main() -> int:
         print(f"\n📂 Active & Recent Sessions ({len(timelines)} found):")
         if timelines:
             print(format_sessions_table(timelines, now, compact=compact_flag))
-            print("Tip: Run `llm-monitor --timeline <SESSION_ID>` to see full event chronology.\n")
+            print("Tip: Run `llm-monitor timeline <SESSION_ID>` (or `llm-monitor logs <SESSION_ID>`) to see full event chronology.\n")
         else:
             print("No sessions found.")
         return 0
@@ -627,7 +772,7 @@ def main() -> int:
             print(format_session_card(t, now))
             print()
         latest_id = timelines[0].session_id[:12]
-        print(f"💡 Tip: Run `llm-monitor --timeline {latest_id}` for full step-by-step chronology.\n")
+        print(f"💡 Tip: Run `llm-monitor timeline {latest_id}` for full step-by-step chronology.\n")
 
     return 0
 
