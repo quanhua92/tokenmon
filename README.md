@@ -4,6 +4,10 @@ A fast, zero-dependency command-line monitor for local AI coding agents.
 
 It measures how fast models actually generate tokens (Tokens Per Second, TPS) by tracking pure generation time—separating thinking and output from tool runs, file edits, and idle waiting.
 
+[![Preview of generation speed and token throughput](demo-stats-preview.png)](demo-stats.jpg)
+
+[View full screenshots of stats, sessions, and timelines](#screenshots).
+
 ---
 
 ## Features
@@ -130,32 +134,30 @@ uv run llm-monitor timeline --window 1d --json | jq .
 
 ---
 
-## Example Output
+## Screenshots
 
-```text
-   __    __   __  ___
-  / /   / /  /  |/  /   M O N I T O R
- / /___/ /__/ /|_/ /    ── ⚡ Agent TPS ──
-/_____/____/_/  /_/
+Expand a screenshot below. Click the image to view it at full size.
 
-⚡ llm-monitor v0.1.0 [Agents: codex]
-📊 Inspected: 48 output streams across up to 64 sessions
+<details>
+<summary><strong>stats</strong> — generation speed and token throughput</summary>
 
-🤖 Model: gpt-5
-┌─────────────┬───────────────┬────────┬──────────┬──────────────┬────────────┬───────────────┐
-│ Time Window │ Valid / Total │ Tokens │ Time (s) │ Weighted TPS │ Median TPS │ Min - Max TPS │
-├─────────────┼───────────────┼────────┼──────────┼──────────────┼────────────┼───────────────┤
-│ 30m         │ 4 / 4         │ 2,410  │ 32.10    │ 75.1         │ 74.2       │ 68.0 - 82.5   │
-│ 1d          │ 18 / 20       │ 12,500 │ 178.40   │ 70.1         │ 71.0       │ 55.4 - 88.0   │
-│ 7d          │ 42 / 48       │ 34,200 │ 502.94   │ 68.0         │ 69.5       │ 49.0 - 91.2   │
-│ 30d         │ 42 / 48       │ 34,200 │ 502.94   │ 68.0         │ 69.5       │ 49.0 - 91.2   │
-└─────────────┴───────────────┴────────┴──────────┴──────────────┴────────────┴───────────────┘
+[![Generation statistics](demo-stats.jpg)](demo-stats.jpg)
 
-📋 Recent 3 Generation Streams:
-  [2026-10-03 14:10:15] gpt-5              :   82.5 TPS  (  660 tokens in   8.00s) [stream-log]
-  [2026-10-03 14:18:22] gpt-5              :   74.2 TPS  (  480 tokens in   6.47s) [item-event]
-  [2026-10-03 14:25:01] gpt-5              :   68.0 TPS  (  810 tokens in  11.91s) [stream-log]
-```
+</details>
+
+<details>
+<summary><strong>ps</strong> — sessions, activity, and token usage</summary>
+
+[![Session overview](demo-ps.jpg)](demo-ps.jpg)
+
+</details>
+
+<details>
+<summary><strong>logs</strong> — chronological session timeline</summary>
+
+[![Session timeline](demo-logs.jpg)](demo-logs.jpg)
+
+</details>
 
 ---
 
