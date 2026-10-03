@@ -173,13 +173,12 @@ class SessionTimeline:
         ref = now if now is not None else time.time()
         return max(0.0, ref - self.updated_at)
 
-    def status(self, now: float | None = None, unattended_threshold: float = 600.0) -> str:
-        """Return human-readable status: Active, Idle, or Unattended."""
+    def status(self, now: float | None = None, inactive_threshold: float = 600.0) -> str:
+        """Return human-readable status: Active, Idle, or Inactive."""
         idle_s = self.idle_time(now)
         if idle_s < 120.0:
             return "Active"
-        if idle_s >= unattended_threshold:
-            minutes = int(idle_s // 60)
-            return f"Unattended (idle {minutes}m)"
         minutes = int(idle_s // 60)
+        if idle_s >= inactive_threshold:
+            return f"Inactive (idle {minutes}m)"
         return f"Idle ({minutes}m)"
