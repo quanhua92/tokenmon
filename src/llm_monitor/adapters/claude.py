@@ -83,6 +83,7 @@ class ClaudeAdapter(BaseAdapter):
 
         # Group assistant chunks by message id: msg_id -> list of (timestamp, record)
         message_chunks: dict[str, list[tuple[float, dict]]] = {}
+        message_starts: dict[str, float | None] = {}
 
         try:
             with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
@@ -100,7 +101,7 @@ class ClaudeAdapter(BaseAdapter):
                     if at is None:
                         continue
 
-                    if rec_type in {"user", "last-prompt"}:
+                    if rec_type in {"user", "last-prompt", "tool_result"}:
                         prev_event_time = at
 
                     elif rec_type == "assistant":
@@ -108,10 +109,8 @@ class ClaudeAdapter(BaseAdapter):
                         msg_id = msg.get("id") or record.get("uuid") or f"msg_{at}"
                         if msg_id not in message_chunks:
                             message_chunks[msg_id] = []
+                            message_starts[msg_id] = prev_event_time
                         message_chunks[msg_id].append((at, record))
-
-                    elif rec_type == "tool_result":
-                        prev_event_time = at
         except Exception:
             return spans
 
@@ -122,25 +121,26 @@ class ClaudeAdapter(BaseAdapter):
 
             first_at, first_rec = chunks[0]
             last_at, last_rec = chunks[-1]
+            req_start = message_starts.get(msg_id)
 
             msg = last_rec.get("message", {})
             model = msg.get("model") or "claude"
             usage = msg.get("usage", {})
             tokens = usage.get("output_tokens") or 0
 
-            # Determine generation boundaries
-            if len(chunks) > 1 and last_at > first_at:
-                # Multi-chunk streaming output
+            # Multiple content blocks in the same message flushed within <0.25s
+            # are not streaming duration — they represent the same arrival instant.
+            chunk_dur = last_at - first_at
+            if len(chunks) > 1 and chunk_dur >= 0.25:
                 started_at = first_at
                 ended_at = last_at
                 timing_source = "chunk-stream"
-            elif prev_event_time is not None and last_at > prev_event_time:
-                # Single chunk output with known preceding event
-                started_at = prev_event_time
+            elif req_start is not None and (last_at - req_start >= 0.2):
+                started_at = req_start
                 ended_at = last_at
                 timing_source = "turn-span"
             else:
-                started_at = last_at
+                started_at = first_at
                 ended_at = last_at
                 timing_source = "instant"
 
@@ -148,12 +148,17 @@ class ClaudeAdapter(BaseAdapter):
             is_valid = True
             note = None
 
-            if duration <= 0.001:
+            if duration < 0.15:
                 is_valid = False
-                note = "sub_millisecond_span"
+                note = "sub_second_placeholder"
             elif tokens <= 0:
                 is_valid = False
                 note = "zero_tokens"
+            elif (tokens / duration) > 400.0:
+                # Sanity ceiling: Speeds > 400 TPS indicate collapsed event boundaries
+                # rather than true model generation rate.
+                is_valid = False
+                note = "unconfirmed_boundary_tps"
 
             spans.append(
                 GenerationSpan(
