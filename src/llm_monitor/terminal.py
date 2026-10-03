@@ -58,14 +58,20 @@ class MonitorShell(cmd.Cmd):
 
     def do_summary(self, arg: str):
         """Show token throughput and TPS metrics across windows.
-Usage: summary [30m|1d|7d|all]
+Usage: summary [30m|1d|7d|30d|all]
 Alias: s"""
         spans = self._get_spans()
         if not spans:
             print("No output streams found.")
             return
 
-        windows = [arg.strip()] if arg.strip() in WINDOW_DURATIONS else ["30m", "1d", "7d", "all"]
+        arg_clean = arg.strip()
+        if arg_clean in WINDOW_DURATIONS:
+            windows = [arg_clean]
+        elif arg_clean == "all":
+            windows = ["30m", "1d", "7d", "30d", "all"]
+        else:
+            windows = ["30m", "1d", "7d", "30d"]
         analysis = analyze_windows(spans, window_names=windows, now=time.time())
 
         for model, summaries in analysis.items():

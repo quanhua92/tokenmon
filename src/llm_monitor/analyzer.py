@@ -12,6 +12,7 @@ WINDOW_DURATIONS: dict[str, float] = {
     "30m": 1800.0,
     "1d": 86400.0,
     "7d": 7 * 86400.0,
+    "30d": 30 * 86400.0,
     "all": float("inf"),
 }
 

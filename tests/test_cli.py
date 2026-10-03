@@ -67,6 +67,7 @@ class TestCLIIntegration(unittest.TestCase):
             "--home",
             str(self.root),
             "--json",
+            "--all",
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res.returncode, 0)

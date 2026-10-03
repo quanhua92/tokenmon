@@ -266,9 +266,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--window",
-        choices=["30m", "1d", "7d", "all"],
+        choices=["30m", "1d", "7d", "30d", "all"],
         default=None,
         help="Filter token throughput to a specific time window",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Include full history ('all' window) in throughput summary tables",
     )
     parser.add_argument(
         "--sessions",
@@ -458,7 +463,12 @@ def main() -> int:
         all_spans.extend(adapter.collect(max_sessions=args.tasks))
 
     all_spans.sort(key=lambda s: s.ended_at)
-    windows = [args.window] if args.window else ["30m", "1d", "7d", "all"]
+    if args.window:
+        windows = [args.window]
+    elif args.all:
+        windows = ["30m", "1d", "7d", "30d", "all"]
+    else:
+        windows = ["30m", "1d", "7d", "30d"]
 
     if args.json:
         grouped_results = {}
