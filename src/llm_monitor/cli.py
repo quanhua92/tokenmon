@@ -401,6 +401,8 @@ def main() -> int:
                 "assistant_messages": selected.assistant_messages,
                 "tool_calls": selected.tool_calls,
                 "total_tokens": selected.total_tokens,
+                "duration_seconds": round(selected.session_duration, 2),
+                "idle_time_seconds": round(selected.idle_time(now), 2),
                 "status": selected.status(now),
                 "events": [
                     {
@@ -441,6 +443,7 @@ def main() -> int:
                     "tool_calls": t.tool_calls,
                     "total_tokens": t.total_tokens,
                     "duration_seconds": round(t.session_duration, 2),
+                    "idle_time_seconds": round(t.idle_time(now), 2),
                     "status": t.status(now),
                 }
                 for t in timelines
