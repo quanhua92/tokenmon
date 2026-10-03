@@ -464,6 +464,19 @@ def main() -> int:
             print(format_recent_span(s, compact=compact_flag))
         print()
 
+    # Recent Session Timelines preview
+    timelines: list[SessionTimeline] = []
+    for adapter in adapters:
+        timelines.extend(adapter.collect_sessions(max_sessions=5))
+    timelines.sort(key=lambda t: t.updated_at, reverse=True)
+
+    if timelines:
+        preview_count = min(3, len(timelines))
+        print(f"🔍 Recent Session Timelines (latest {preview_count}):")
+        print(format_sessions_table(timelines[:preview_count], now, compact=compact_flag))
+        latest_id = timelines[0].session_id[:8]
+        print(f"💡 Tip: Run `llm-monitor --timeline` (or `--timeline {latest_id}`) for full event breakdown.\n")
+
     return 0
 
 
