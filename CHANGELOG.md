@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Add `stats --watch` with a configurable `--interval` (default: 2 seconds).
+- Share the stats dashboard with interactive watch, including recent generation streams and session cards.
+- Show recent sessions even when no generation streams are available.
+- Add `logs -f` / `--follow` to append only newly observed events from the session selected at startup.
+- Keep follow attached to its selected source and suppress repeated events after streamed metadata updates.
+- Remove the `-w` window shortcut; use the explicit `--window` option across commands.
+- Reject `--json` in live modes and batch `--window` exports with `--follow`.
+
 ## [0.1.1] — 2026-10-04
 
 - Document `uvx`, `uv tool install`, and `pip install` as the primary ways to use TokenMon.

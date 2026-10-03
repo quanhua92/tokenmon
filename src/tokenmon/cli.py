@@ -5,15 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import shutil
 import sys
 import time
 from datetime import datetime, timezone
 
 from tokenmon import __version__
-from tokenmon.adapters import ADAPTER_REGISTRY, detect_available_adapters, get_adapter
+from tokenmon.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
 from tokenmon.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
-from tokenmon.models import GenerationSpan, SessionTimeline, WindowSummary
+from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, WindowSummary
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +241,12 @@ def format_timeline_view(timeline: SessionTimeline, now: float) -> str:
         f"Status: \033[1m{timeline.status(now)}\033[0m\n",
     ]
 
+    lines.extend(format_timeline_event(ev) for ev in timeline.events)
+    return "\n".join(lines)
+
+
+def format_timeline_event(ev: TimelineEvent) -> str:
+    """Format one event identically in historical and live timelines."""
     event_icons = {
         "user_message": "👤 \033[1;34mUSER\033[0m     ",
         "assistant_message": "🤖 \033[1;32mASSISTANT\033[0m",
@@ -250,14 +257,11 @@ def format_timeline_view(timeline: SessionTimeline, now: float) -> str:
         "turn_end": "⏹️  \033[2mCOMPLETE\033[0m ",
     }
 
-    for ev in timeline.events:
-        dt = datetime.fromtimestamp(ev.timestamp, tz=timezone.utc).astimezone()
-        t_str = dt.strftime("%H:%M:%S")
-        tag = event_icons.get(ev.kind, f"•  {ev.kind:<9}")
-        dur_str = f" [{ev.duration:.2f}s]" if ev.duration is not None else ""
-        lines.append(f"  {t_str} │ {tag} │ {ev.summary}{dur_str}")
-
-    return "\n".join(lines)
+    dt = datetime.fromtimestamp(ev.timestamp, tz=timezone.utc).astimezone()
+    t_str = dt.strftime("%H:%M:%S")
+    tag = event_icons.get(ev.kind, f"•  {ev.kind:<9}")
+    dur_str = f" [{ev.duration:.2f}s]" if ev.duration is not None else ""
+    return f"  {t_str} │ {tag} │ {ev.summary}{dur_str}"
 
 
 ASCII_LOGO = r"""
@@ -292,6 +296,85 @@ def print_banner(color: bool = True) -> None:
         print(f"\n{ASCII_LOGO}\n")
 
 
+def collection_cutoff(window: str | None, include_all: bool, now: float) -> float | None:
+    if include_all or window == "all":
+        return None
+    return now - WINDOW_DURATIONS[window or "30d"]
+
+
+def stats_windows(window: str | None, include_all: bool) -> list[str]:
+    if window:
+        return [window]
+    return ["30m", "1d", "7d", "30d"] + (["all"] if include_all else [])
+
+
+def collect_timelines(adapters: list[BaseAdapter], max_sessions: int,
+                      min_timestamp: float | None = None) -> list[SessionTimeline]:
+    timelines = []
+    for adapter in adapters:
+        try:
+            timelines.extend(adapter.collect_sessions(max_sessions=max_sessions, min_timestamp=min_timestamp))
+        except Exception as e:
+            logger.warning("Adapter '%s' failed to collect sessions: %s", adapter.name, e)
+    timelines.sort(key=lambda t: t.updated_at, reverse=True)
+    return timelines
+
+
+def collect_stats(adapters: list[BaseAdapter], tasks: int, min_timestamp: float | None
+                  ) -> tuple[list[GenerationSpan], list[SessionTimeline]]:
+    spans = []
+    for adapter in adapters:
+        try:
+            spans.extend(adapter.collect(max_sessions=tasks, min_timestamp=min_timestamp))
+        except Exception as e:
+            logger.warning("Adapter '%s' failed to collect spans: %s", adapter.name, e)
+    spans.sort(key=lambda s: s.ended_at)
+    # Recent-session previews are independent of the throughput cutoff.
+    return spans, collect_timelines(adapters, max_sessions=5)
+
+
+def print_stats_dashboard(adapters: list[BaseAdapter], spans: list[GenerationSpan],
+                          timelines: list[SessionTimeline], windows: list[str], now: float,
+                          tasks: int = 64, recent: int = 10,
+                          compact: bool | None = None, guide: bool = True) -> None:
+    active_names = ", ".join(a.name for a in adapters)
+    print(f"\n⚡ TokenMon v{__version__} [Agents: {active_names}]")
+    print(f"📊 Inspected: {len(spans)} output streams across up to {tasks} sessions\n")
+    if not spans:
+        print("No generation output streams found in the inspected sessions.")
+    for model, summaries in analyze_windows(spans, window_names=windows, now=now).items():
+        print(f"🤖 Model: \033[1m{model}\033[0m")
+        print(format_table(summaries, compact=compact))
+        print()
+    valid_spans = [s for s in spans if s.tps is not None]
+    if valid_spans and recent > 0:
+        recent_count = min(recent, len(valid_spans))
+        print(f"📋 Recent {recent_count} Generation Streams:")
+        for s in valid_spans[-recent_count:]:
+            print(format_recent_span(s, compact=compact))
+        print()
+    if timelines:
+        preview_count = min(3, len(timelines))
+        print(f"🔍 Recent Sessions & User Interactions (latest {preview_count}):\n")
+        for t in timelines[:preview_count]:
+            print(format_session_card(t, now))
+            print()
+        latest_id = timelines[0].session_id[:12]
+        print(f"💡 Tip: Run `tokenmon timeline {latest_id}` for full step-by-step chronology.\n")
+    if guide:
+        print(STATS_GUIDE)
+
+
+def positive_interval(value: str) -> float:
+    try:
+        interval = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("interval must be a positive, finite number") from None
+    if not math.isfinite(interval) or interval <= 0:
+        raise argparse.ArgumentTypeError("interval must be a positive, finite number")
+    return interval
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="tokenmon",
@@ -320,7 +403,6 @@ def main() -> int:
     )
     p_stats.add_argument("-a", "--agent", dest="agent_opt", default=None, help=argparse.SUPPRESS)
     p_stats.add_argument(
-        "-w",
         "--window",
         choices=["30m", "1d", "7d", "30d", "all"],
         default=None,
@@ -364,6 +446,9 @@ def main() -> int:
         action="store_true",
         help="Output raw machine-readable JSON",
     )
+    p_stats.add_argument("--watch", action="store_true", help="Refresh the complete stats dashboard until Ctrl+C")
+    p_stats.add_argument("--interval", type=positive_interval, default=2.0,
+                         help="Watch refresh interval in seconds (default: 2)")
 
     # 2. sessions (aliases: ps, ls)
     p_sessions = subparsers.add_parser(
@@ -379,7 +464,6 @@ def main() -> int:
     )
     p_sessions.add_argument("-a", "--agent", dest="agent_opt", default=None, help=argparse.SUPPRESS)
     p_sessions.add_argument(
-        "-w",
         "--window",
         choices=["30m", "1d", "7d", "30d", "all"],
         default=None,
@@ -432,7 +516,6 @@ def main() -> int:
     )
     p_timeline.add_argument("-a", "--agent", dest="agent_opt", default=None, help="Target agent adapter")
     p_timeline.add_argument(
-        "-w",
         "--window",
         choices=["30m", "1d", "7d", "30d", "all"],
         default=None,
@@ -460,6 +543,10 @@ def main() -> int:
         action="store_true",
         help="Output raw machine-readable JSON",
     )
+    p_timeline.add_argument("-f", "--follow", action="store_true",
+                            help="Print only new events from the selected session until Ctrl+C")
+    p_timeline.add_argument("--interval", type=positive_interval, default=2.0,
+                            help="Follow polling interval in seconds (default: 2)")
 
     # 4. interactive (aliases: repl, shell)
     p_interactive = subparsers.add_parser(
@@ -510,6 +597,12 @@ def main() -> int:
     elif cmd in {"repl", "shell"}:
         cmd = "interactive"
 
+    live = getattr(args, "watch", False) or getattr(args, "follow", False)
+    if live and args.json:
+        parser.error("--json cannot be combined with --watch or --follow")
+    if getattr(args, "follow", False) and (args.window is not None or args.session_id == "window"):
+        parser.error("--follow selects one session; omit --window and use --all for older history")
+
     # Determine which adapters to run
     adapters = []
     agent_target = getattr(args, "agent_opt", None) or getattr(args, "agent", None)
@@ -556,17 +649,18 @@ def main() -> int:
     now = time.time()
 
     # Compute cutoff timestamp (default 30 days unless --all or window is 'all')
-    min_ts: float | None = None
     window_val = getattr(args, "window", None)
     all_val = getattr(args, "all", False)
-    if not all_val and window_val != "all":
-        if window_val:
-            min_ts = now - WINDOW_DURATIONS[window_val]
-        else:
-            min_ts = now - (30 * 86400.0)
+    min_ts = collection_cutoff(window_val, all_val, now)
+
+    if getattr(args, "watch", False):
+        from tokenmon.live import watch_stats
+        compact = True if args.compact else (False if args.wide else None)
+        return watch_stats(adapters, interval=args.interval, window=window_val,
+                           include_all=all_val, tasks=args.tasks, recent=args.recent, compact=compact)
 
     # Print ASCII banner in human terminal mode
-    if not getattr(args, "json", False):
+    if not getattr(args, "json", False) and not getattr(args, "follow", False):
         print_banner()
 
     # Handle timeline command
@@ -642,6 +736,11 @@ def main() -> int:
             print(json.dumps(timeline_to_dict(selected), indent=2))
             return 0
 
+        if args.follow:
+            from tokenmon.live import follow_session
+            adapter = next(a for a in adapters if a.name == selected.agent)
+            return follow_session(adapter, selected, interval=args.interval)
+
         print()
         print(format_timeline_view(selected, now))
         print()
@@ -690,34 +789,11 @@ def main() -> int:
             print("No sessions found.")
         return 0
 
-    # Default Mode: Collect spans for throughput / TPS monitoring
-    all_spans: list[GenerationSpan] = []
-    for adapter in adapters:
-        try:
-            all_spans.extend(adapter.collect(max_sessions=args.tasks, min_timestamp=min_ts))
-        except Exception as e:
-            logger.error("Adapter '%s' error collecting generation spans: %s", adapter.name, e)
-            print(f"Warning: Adapter '{adapter.name}' failed to parse spans: {e}", file=sys.stderr)
-
-    all_spans.sort(key=lambda s: s.ended_at)
-    if args.window:
-        windows = [args.window]
-    elif args.all:
-        windows = ["30m", "1d", "7d", "30d", "all"]
-    else:
-        windows = ["30m", "1d", "7d", "30d"]
-
+    # Default Mode: Collect one snapshot for throughput and recent activity.
+    all_spans, timelines = collect_stats(adapters, args.tasks, min_ts)
+    windows = stats_windows(args.window, args.all)
     analysis = analyze_windows(all_spans, window_names=windows, now=now)
     valid_spans = [s for s in all_spans if s.tps is not None]
-
-    # Collect recent sessions preview
-    timelines: list[SessionTimeline] = []
-    for adapter in adapters:
-        try:
-            timelines.extend(adapter.collect_sessions(max_sessions=5))
-        except Exception as e:
-            logger.error("Adapter '%s' error collecting preview sessions: %s", adapter.name, e)
-    timelines.sort(key=lambda t: t.updated_at, reverse=True)
 
     if args.json:
         # 1. Models throughput breakdown
@@ -809,40 +885,9 @@ def main() -> int:
         print(json.dumps(full_output, indent=2))
         return 0
 
-    # Human-readable terminal output
-    active_names = ", ".join(a.name for a in adapters)
-    print(f"\n⚡ TokenMon v{__version__} [Agents: {active_names}]")
-    print(f"📊 Inspected: {len(all_spans)} output streams across up to {args.tasks} sessions\n")
-
-    if not all_spans:
-        print("No generation output streams found in the inspected sessions.")
-        return 0
-
     compact_flag = True if args.compact else (False if args.wide else None)
-    for model, summaries in analysis.items():
-        print(f"🤖 Model: \033[1m{model}\033[0m")
-        print(format_table(summaries, compact=compact_flag))
-        print()
-
-    # Recent outputs breakdown
-    if valid_spans and args.recent > 0:
-        recent_count = min(args.recent, len(valid_spans))
-        print(f"📋 Recent {recent_count} Generation Streams:")
-        for s in valid_spans[-recent_count:]:
-            print(format_recent_span(s, compact=compact_flag))
-        print()
-
-    # Recent Sessions & User Interactions overview
-    if timelines:
-        preview_count = min(3, len(timelines))
-        print(f"🔍 Recent Sessions & User Interactions (latest {preview_count}):\n")
-        for t in timelines[:preview_count]:
-            print(format_session_card(t, now))
-            print()
-        latest_id = timelines[0].session_id[:12]
-        print(f"💡 Tip: Run `tokenmon timeline {latest_id}` for full step-by-step chronology.\n")
-
-    print(STATS_GUIDE)
+    print_stats_dashboard(adapters, all_spans, timelines, windows, now,
+                          tasks=args.tasks, recent=args.recent, compact=compact_flag)
     return 0
 
 

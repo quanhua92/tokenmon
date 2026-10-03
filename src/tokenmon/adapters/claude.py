@@ -34,6 +34,7 @@ class ClaudeAdapter(BaseAdapter):
 
     def __init__(self, root: Path | str | None = None):
         self._custom_root = Path(root).expanduser().resolve() if root else None
+        self._timeline_sources: dict[str, Path] = {}
 
     @property
     def name(self) -> str:
@@ -190,6 +191,7 @@ class ClaudeAdapter(BaseAdapter):
         for p in session_files:
             try:
                 timeline = self._parse_session_timeline(p.stem, p)
+                self._timeline_sources[p.stem] = p
                 if timeline.events and (min_timestamp is None or timeline.updated_at >= min_timestamp):
                     timelines.append(timeline)
             except Exception as e:
@@ -197,6 +199,12 @@ class ClaudeAdapter(BaseAdapter):
 
         timelines.sort(key=lambda t: t.updated_at, reverse=True)
         return timelines
+
+    def read_session(self, session_id: str) -> SessionTimeline | None:
+        path = self._timeline_sources.get(session_id)
+        if path is None:
+            return super().read_session(session_id)
+        return self._parse_session_timeline(session_id, path)
 
     def _parse_session_timeline(self, session_id: str, jsonl_path: Path) -> SessionTimeline:
         events: list[TimelineEvent] = []
@@ -207,7 +215,7 @@ class ClaudeAdapter(BaseAdapter):
 
         try:
             with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
+                for record_number, line in enumerate(f):
                     line = line.strip()
                     if not line:
                         continue
@@ -231,6 +239,9 @@ class ClaudeAdapter(BaseAdapter):
                     turn_id = rec.get("uuid")
                     if not isinstance(turn_id, str) or not turn_id:
                         turn_id = f"turn_{at}"
+                    record_id = rec.get("uuid")
+                    if not isinstance(record_id, str) or not record_id:
+                        record_id = f"record:{record_number}"
 
                     if rec_type == "user":
                         msg = rec.get("message", {})
@@ -251,6 +262,7 @@ class ClaudeAdapter(BaseAdapter):
                                 kind="user_message",
                                 turn_id=turn_id,
                                 summary=summary,
+                                event_id=f"{record_id}:user",
                             )
                         )
 
@@ -263,6 +275,7 @@ class ClaudeAdapter(BaseAdapter):
                                     kind="user_message",
                                     turn_id=turn_id,
                                     summary=f"User prompt: {prompt_text[:60]}",
+                                    event_id=f"{record_id}:prompt",
                                 )
                             )
 
@@ -272,7 +285,7 @@ class ClaudeAdapter(BaseAdapter):
                             continue
                         msg_id = msg.get("id")
                         if not isinstance(msg_id, str) or not msg_id:
-                            msg_id = turn_id
+                            msg_id = record_id
                         cur_model = msg.get("model")
                         if isinstance(cur_model, str) and cur_model:
                             model = cur_model
@@ -302,6 +315,7 @@ class ClaudeAdapter(BaseAdapter):
                                                 kind="reasoning",
                                                 turn_id=turn_id,
                                                 summary="Thinking / reasoning",
+                                                event_id=f"message:{msg_id}:thinking:{block_key[2]}",
                                             )
                                         )
                                     elif b_type == "tool_use":
@@ -312,6 +326,7 @@ class ClaudeAdapter(BaseAdapter):
                                                 kind="tool_call",
                                                 turn_id=turn_id,
                                                 summary=f"Tool call requested: {tname}",
+                                                event_id=f"message:{msg_id}:tool:{block_key[2]}",
                                             )
                                         )
 
@@ -322,6 +337,7 @@ class ClaudeAdapter(BaseAdapter):
                             turn_id=turn_id,
                             summary=f"Assistant response ({out_tokens} tokens)",
                             tokens=out_tokens,
+                            event_id=f"message:{msg_id}:assistant",
                         )
                         if msg_id in assistant_event_indexes:
                             index = assistant_event_indexes[msg_id]
@@ -340,6 +356,7 @@ class ClaudeAdapter(BaseAdapter):
                                 kind="tool_output",
                                 turn_id=turn_id,
                                 summary=f"Tool execution complete: {tname}",
+                                event_id=f"{record_id}:tool_output",
                             )
                         )
 
@@ -353,6 +370,7 @@ class ClaudeAdapter(BaseAdapter):
                                 turn_id=turn_id,
                                 summary="Turn complete",
                                 duration=dur_s,
+                                event_id=f"{record_id}:turn_end",
                             )
                         )
         except Exception:

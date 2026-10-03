@@ -98,6 +98,13 @@ tokenmon stats
 # Filter to a specific time window (30m, 1d, 7d, 30d, all)
 tokenmon stats --window 1d
 
+# Refresh the full dashboard every 2 seconds (Ctrl+C to stop)
+tokenmon stats --watch
+tokenmon stats --watch --window 1d
+
+# Customize the refresh interval
+tokenmon stats --watch --window 1d --interval 5
+
 # Include full history beyond the default 30-day cutoff
 tokenmon stats --all
 
@@ -109,6 +116,14 @@ tokenmon stats claude --home ~/.claude
 tokenmon stats --compact
 tokenmon stats --wide
 ```
+
+Watch mode refreshes throughput metrics, recent generation streams, and recent
+session cards together. It redraws the screen in a terminal; redirected output
+appends complete snapshots. Agent selection, `--home`, `--tasks`, `--recent`,
+`--compact`, and `--wide` also work with `--watch`.
+
+Time filtering uses the explicit `--window` option across commands. The former
+`-w` shortcut has been removed; use `--window 1d` in existing commands and scripts.
 
 ### Active & Recent Sessions (`sessions`, `ps`, `ls`)
 
@@ -136,9 +151,31 @@ tokenmon logs
 # View timeline of a specific session ID or prefix
 tokenmon logs 01a10275
 
+# Follow only new events from the session that is latest at startup
+tokenmon logs -f
+
+# Follow a specific session ID/prefix, or an agent's latest session
+tokenmon logs 01a10275 --follow
+tokenmon logs codex -f
+
+# Customize the polling interval (default: 2 seconds)
+tokenmon logs -f --interval 1
+
 # Export all session timelines from today in JSON format
 tokenmon timeline --window 1d --json
 ```
+
+Follow mode starts at the current end: it prints a short session header, then only
+newly observed timeline events. It keeps the initially selected session even when
+another session becomes newer, and appends output without clearing the screen or
+replaying history. Updates to an existing event's usage or timestamp do not print
+that event again. Press Ctrl+C to stop.
+
+`-f` and `--follow` work with `logs`, `log`, and `timeline`. Follow selects one
+session, so it cannot be combined with the batch export option `--window`; use
+`--all` to select a session older than the default 30-day cutoff. The interval must
+be a positive, finite number. Polling reads the selected session again rather than
+following raw file bytes, which also supports SQLite-backed Antigravity sessions.
 
 ### Interactive Shell (`interactive`, `repl`, `shell`, `-i`)
 
@@ -156,13 +193,14 @@ Available commands inside the shell:
 (tokenmon) sessions           # list active & inactive sessions
 (tokenmon) timeline latest    # view step-by-step event timeline
 (tokenmon) recent 15          # view latest generation speeds
-(tokenmon) watch 2.0 1d       # live auto-refresh dashboard (Ctrl+C to stop)
+(tokenmon) watch 2.0 1d       # metrics, recent streams, and session cards (Ctrl+C to stop)
 (tokenmon) help               # list all commands
 ```
 
 ### Machine-Readable JSON Output
 
-Every command supports `--json` for easy scripting:
+Stats, sessions, and historical timelines support `--json` for easy scripting.
+Live `--watch` and `--follow` modes require human output and reject `--json`:
 
 ```bash
 tokenmon stats --json | jq .

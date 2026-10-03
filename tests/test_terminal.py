@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from tokenmon.adapters.codex import CodexAdapter
 from tokenmon.terminal import MonitorShell
+from tokenmon.models import SessionTimeline, create_span
 
 
 class TestTerminalShell(unittest.TestCase):
@@ -87,6 +88,30 @@ class TestTerminalShell(unittest.TestCase):
         self.assertIn("[Active]", text)
         self.assertIn("claude", text)
         self.assertIn("antigravity", text)
+
+    def test_shell_watch_prints_recent_streams_and_sessions(self):
+        span = create_span(agent="codex", session_id="session", turn_id="turn", model="m",
+                           tokens=120, started_at=99996, ended_at=99998, timing_source="item")
+        timeline = SessionTimeline("session", "codex", "m", 99990, 99998)
+        with patch.object(self.adapter, "collect", return_value=[span]) as collect, \
+                patch.object(self.adapter, "collect_sessions", return_value=[timeline]), \
+                patch("tokenmon.live.time.time", return_value=100000), \
+                patch("tokenmon.live.time.sleep", side_effect=KeyboardInterrupt), \
+                patch("sys.stdout", new=io.StringIO()) as output:
+            self.shell.do_watch("2.0 1d")
+        self.assertIn("Recent 1 Generation Streams", output.getvalue())
+        self.assertIn("Recent Sessions & User Interactions", output.getvalue())
+        self.assertIn("60.0 TPS", output.getvalue())
+        self.assertIn("Exited watch mode", output.getvalue())
+        collect.assert_called_once_with(max_sessions=64, min_timestamp=13600)
+
+    def test_shell_watch_rejects_invalid_interval_and_window(self):
+        for arguments in ("nan 1d", "0 1d", "2.0 invalid", "2.0 1d extra"):
+            with self.subTest(arguments=arguments), patch("sys.stdout", new=io.StringIO()) as output, \
+                    patch("tokenmon.live.watch_stats") as watch:
+                self.shell.do_watch(arguments)
+                self.assertTrue(output.getvalue())
+                watch.assert_not_called()
 
 
 if __name__ == "__main__":

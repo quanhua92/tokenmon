@@ -43,3 +43,8 @@ class BaseAdapter(ABC):
         if spans:
             return max(s.ended_at for s in spans)
         return None
+
+    def read_session(self, session_id: str) -> SessionTimeline | None:
+        """Refresh one exact session. Built-in adapters retain its discovered source."""
+        return next((t for t in self.collect_sessions(max_sessions=64)
+                     if t.session_id == session_id), None)

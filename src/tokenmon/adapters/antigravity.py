@@ -292,6 +292,12 @@ class AntigravityAdapter(BaseAdapter):
         timelines.sort(key=lambda t: t.updated_at, reverse=True)
         return timelines
 
+    def read_session(self, session_id: str) -> SessionTimeline | None:
+        # Follow uses the exact ID, even when it leaves the recent-session limit.
+        if not (self.root / "conversations" / f"{session_id}.db").is_file():
+            return None
+        return self.parse_session_timeline(session_id)
+
     def parse_session_timeline(self, session_id: str) -> SessionTimeline:
         db_path = self.root / "conversations" / f"{session_id}.db"
         if not db_path.exists():
@@ -375,6 +381,7 @@ class AntigravityAdapter(BaseAdapter):
                                 kind="user_message",
                                 turn_id=str(idx),
                                 summary=user_text,
+                                event_id=f"step:{idx}:user",
                             )
                         )
 
@@ -398,6 +405,7 @@ class AntigravityAdapter(BaseAdapter):
                                 summary=f"Assistant response ({out_tokens} tokens)",
                                 duration=dur,
                                 tokens=out_tokens,
+                                event_id=f"step:{idx}:assistant",
                             )
                         )
 
@@ -429,6 +437,7 @@ class AntigravityAdapter(BaseAdapter):
                                 kind="tool_call",
                                 turn_id=str(idx),
                                 summary=f"Tool call: {tool_name}",
+                                event_id=f"step:{idx}:tool",
                                 duration=dur,
                             )
                         )

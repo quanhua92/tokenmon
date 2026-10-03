@@ -26,6 +26,7 @@ to normal operation or tests.
 | `src/tokenmon/adapters/{codex,claude,antigravity}.py` | Source discovery, generation spans, and session timelines. |
 | `src/tokenmon/cli.py` | Argument normalization, collection, human formatting, JSON serialization. |
 | `src/tokenmon/terminal.py` | `cmd.Cmd` shell, watch loop, completion, three-second timeline cache. |
+| `src/tokenmon/live.py` | Shared stats watch loop and append-only following of a pinned session; no `readline` dependency. |
 | `src/tokenmon/{__init__,__main__}.py` | Version and module entry point; console script calls `cli.main`. |
 | `tests/test_*.py` | Standard-library `unittest`, temporary JSONL/SQLite fixtures, CLI subprocess checks. Model/analyzer tests live in `test_codex_adapter.py`. |
 | `.github/workflows/{ci,release}.yml` | PR/main tests and package checks; manual main-only PyPI trusted publishing. Build tools are pinned in `.github/requirements-build.txt`. |
@@ -51,6 +52,8 @@ to normal operation or tests.
 - Session duration/activity is separate from generation duration. Status uses
   time since the last event: Active below 120s, Idle below 600s, then Inactive.
   `cwd` is optional recorded metadata; unknown is `None`, never the monitor's cwd.
+- Timeline events carry an optional internal `event_id` for live deduplication;
+  keep it stable across usage/timestamp updates and out of the public JSON shape.
 
 ## Adapter specifics
 
@@ -58,6 +61,9 @@ Explicit `root`/CLI `--home` overrides the agent environment variable, then its
 default home path. Collection defaults to 64 sessions for spans and 32 for timelines;
 accept and propagate `max_sessions` and `min_timestamp`. Bound discovery before
 expensive parsing, but preserve earlier context needed by records within a window.
+`read_session(session_id)` refreshes an exact session for live follow. Built-in
+adapters retain discovered source paths or use an exact database ID so the pinned
+session continues to be readable outside the recent-session discovery limit.
 
 - **Codex:** `CODEX_HOME` or `~/.codex`. Choose the highest numeric
   `state_*.sqlite`/`logs_*.sqlite` version. Discover unarchived `threads` with optional
@@ -92,6 +98,20 @@ Preserve `stats`/`top` (default), `sessions`/`ps`/`ls`, `timeline`/`log`/`logs`,
 `interactive`/`repl`/`shell` plus `-i`/`--interactive`. Bare agent/option invocations
 default to stats. Timeline accepts an ID/prefix or `latest`, with `--agent` selection;
 an adapter name in its positional slot selects that adapter's latest session.
+
+Time windows use `--window` explicitly; the former `-w` shortcut is removed.
+`stats`/`top` and bare stats invocations accept `--watch` and `--interval` (default
+2 seconds). CLI and shell watch share stats collection/rendering, including recent
+streams and session cards. Recalculate cutoffs each refresh; clear the screen only
+when stdout is a terminal. Show recent sessions even without generation spans.
+
+`timeline`/`log`/`logs` accept `-f`/`--follow` and `--interval`. Resolve and pin the
+initial session, baseline its existing events without printing them, and append
+only new source identities. Do not replay history, redraw the screen, switch to a
+newer session, or repeat an event because its metadata changed. Preserve the seen
+baseline through temporary read failures. Live modes reject `--json`; follow also
+rejects batch `--window` exports. Ctrl+C stops CLI live modes or returns shell watch
+to the prompt. Keep live CLI imports independent of the shell and `readline`.
 
 The default collection cutoff is 30 days. `--window` selects a window; `--all` or
 `--window all` removes the cutoff, but session limits still apply. Positional agent
@@ -148,3 +168,6 @@ Keep coverage for these previously reproduced defects:
 - Sort sessions globally after merging adapters so `latest` selects the newest.
 - Skip non-object JSON and malformed nested shapes without losing later valid
   records in either span or timeline parsing.
+- Watch includes recent streams and session cards, including sessions with no
+  generation spans. Follow emits nothing historical, handles equal timestamps and
+  streamed metadata updates, and remains pinned when recent-session ordering changes.

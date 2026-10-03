@@ -7,11 +7,10 @@ import os
 import readline
 import sys
 import time
-from datetime import datetime, timezone
 
 from tokenmon import __version__
 from tokenmon.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
-from tokenmon.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
+from tokenmon.analyzer import WINDOW_DURATIONS, analyze_windows
 from tokenmon.cli import ASCII_LOGO, format_recent_span, format_sessions_table, format_table, format_timeline_view
 from tokenmon.models import GenerationSpan, SessionTimeline
 
@@ -168,41 +167,24 @@ Alias: r"""
     def do_watch(self, arg: str):
         """Live auto-refresh dashboard mode. Press Ctrl+C to stop.
 Usage: watch [interval_seconds] [window]"""
+        from tokenmon.cli import positive_interval
+        from tokenmon.live import watch_stats
+        import argparse
+
         parts = arg.strip().split()
-        interval = 2.0
-        window = "all"
-        if len(parts) >= 1 and parts[0].replace(".", "", 1).isdigit():
-            interval = max(0.5, float(parts[0]))
-        if len(parts) >= 2 and parts[1] in WINDOW_DURATIONS:
-            window = parts[1]
-
-        print(f"Starting live watch every {interval}s on window '{window}' (Press Ctrl+C to exit)...")
-        time.sleep(0.5)
-
+        if len(parts) > 2:
+            print("Usage: watch [interval_seconds] [window]")
+            return
         try:
-            while True:
-                # Clear terminal screen
-                print("\033[2J\033[H", end="")
-                now = time.time()
-                spans = self._get_spans()
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                print(f"⚡ TokenMon Live Dashboard [{now_str}] (Interval: {interval}s | Ctrl+C to return)\n")
-
-                if spans:
-                    analysis = analyze_windows(spans, window_names=[window], now=now)
-                    for model, summaries in analysis.items():
-                        print(f"🤖 Model: \033[1m{model}\033[0m")
-                        print(format_table(summaries))
-                        print()
-
-                timelines = self._get_timelines(max_sessions=5, force=True)
-                if timelines:
-                    print("📂 Latest Sessions:")
-                    print(format_sessions_table(timelines[:5], now))
-
-                time.sleep(interval)
-        except KeyboardInterrupt:
-            print("\nExited watch mode.\n")
+            interval = positive_interval(parts[0]) if parts else 2.0
+        except argparse.ArgumentTypeError as e:
+            print(f"Error: {e}")
+            return
+        window = parts[1] if len(parts) == 2 else "all"
+        if window not in WINDOW_DURATIONS:
+            print(f"Error: Unknown window '{window}'.")
+            return
+        watch_stats(self.adapters, interval=interval, window=window, guide=False)
 
     def do_clear(self, arg: str):
         """Clear terminal screen.

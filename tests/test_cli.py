@@ -2,6 +2,8 @@
 
 import json
 import io
+import select
+import signal
 import subprocess
 import sys
 import tempfile
@@ -56,6 +58,111 @@ class TestCLIIntegration(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_cli_watch_routes_explicit_alias_and_default_stats_options(self):
+        for prefix in (["stats"], ["top"], []):
+            with self.subTest(prefix=prefix), \
+                    patch.object(sys, "argv", ["tokenmon"] + prefix + [
+                        "codex", "--home", str(self.root), "--watch", "--window", "1d",
+                        "--interval", "5", "--recent", "2", "--tasks", "7", "--wide"]), \
+                    patch("tokenmon.live.watch_stats", return_value=0) as watch, \
+                    patch("sys.stdout", new=io.StringIO()) as output:
+                self.assertEqual(main(), 0)
+                self.assertEqual(output.getvalue(), "")
+                adapters = watch.call_args.args[0]
+                self.assertEqual(adapters[0].root, self.root.resolve())
+                self.assertEqual(watch.call_args.kwargs, {
+                    "interval": 5.0, "window": "1d", "include_all": False,
+                    "tasks": 7, "recent": 2, "compact": False,
+                })
+
+    def test_cli_follow_routes_aliases_and_session_selection_without_history(self):
+        for command, target in [("logs", "codex"), ("log", "cli_t"), ("timeline", "latest")]:
+            with self.subTest(command=command), \
+                    patch.object(sys, "argv", ["tokenmon", command, target, "--home", str(self.root),
+                                              "-a", "codex", "-f", "--interval", "3"]), \
+                    patch("tokenmon.live.follow_session", return_value=0) as follow, \
+                    patch("sys.stdout", new=io.StringIO()) as output:
+                # The positional adapter shorthand applies only without --agent.
+                if target == "codex":
+                    sys.argv = ["tokenmon", command, target, "--home", str(self.root), "-f", "--interval", "3"]
+                self.assertEqual(main(), 0)
+                self.assertEqual(output.getvalue(), "")
+                adapter, initial = follow.call_args.args
+                self.assertEqual(adapter.name, "codex")
+                self.assertEqual(initial.session_id, "cli_test")
+                self.assertTrue(initial.events)
+                self.assertEqual(follow.call_args.kwargs, {"interval": 3.0})
+
+    def test_cli_rejects_removed_window_shortcut_and_invalid_live_options(self):
+        cases = [
+            ["stats", "-w", "1d"], ["sessions", "-w", "1d"], ["logs", "-w", "1d"],
+            ["stats", "--watch", "--json"], ["logs", "--follow", "--json"],
+            ["logs", "-f", "--window", "1d"], ["logs", "window", "-f"],
+        ]
+        for command in ("stats", "logs"):
+            for interval in ("0", "-2", "nan", "inf", "abc"):
+                cases.append([command, "--interval", interval])
+        for arguments in cases:
+            with self.subTest(arguments=arguments), \
+                    patch.object(sys, "argv", ["tokenmon"] + arguments), \
+                    patch("sys.stderr", new=io.StringIO()), \
+                    patch("sys.stdout", new=io.StringIO()) as output, \
+                    patch("tokenmon.cli.detect_available_adapters") as detect:
+                with self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertEqual(output.getvalue(), "")
+                detect.assert_not_called()
+
+    def test_follow_not_found_returns_error_without_banner(self):
+        with patch.object(sys, "argv", ["tokenmon", "logs", "missing", "--agent", "codex",
+                                       "--home", str(self.root), "-f"]), \
+                patch("sys.stdout", new=io.StringIO()) as output, \
+                patch("sys.stderr", new=io.StringIO()) as errors:
+            self.assertEqual(main(), 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("not found", errors.getvalue())
+
+    def test_json_event_shape_does_not_expose_internal_identity(self):
+        with patch.object(sys, "argv", ["tokenmon", "logs", "codex", "--home", str(self.root), "--json"]), \
+                patch("sys.stdout", new=io.StringIO()) as output:
+            self.assertEqual(main(), 0)
+        events = json.loads(output.getvalue())["events"]
+        self.assertTrue(events)
+        self.assertEqual(set(events[0]), {"timestamp", "kind", "turn_id", "summary", "tokens", "duration"})
+
+    def test_follow_subprocess_starts_at_end_flushes_new_events_and_exits_on_sigint(self):
+        cmd = [sys.executable, "-m", "tokenmon", "logs", "codex", "--home", str(self.root),
+               "-f", "--interval", "0.01"]
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, env={"PYTHONPATH": "src"}) as process:
+            try:
+                self.assertTrue(select.select([process.stdout], [], [], 5)[0], "follow header timed out")
+                header = process.stdout.readline()
+                self.assertIn("Following session cli_test", header)
+                with (self.root / "sessions" / "cli_test.jsonl").open("a") as stream:
+                    stream.write(json.dumps({
+                        "type": "response_item",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "payload": {"type": "function_call", "name": "synthetic-live-tool"},
+                    }) + "\n")
+                self.assertTrue(select.select([process.stdout], [], [], 5)[0], "new event timed out")
+                event = process.stdout.readline()
+                self.assertIn("synthetic-live-tool", event)
+                process.send_signal(signal.SIGINT)
+                remaining, errors = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, errors)
+                output = header + event + remaining
+                self.assertEqual(output.count("synthetic-live-tool"), 1)
+                self.assertNotIn("Assistant message", output)
+                self.assertNotIn("User started turn", output)
+                self.assertNotIn("\033[2J", output)
+                self.assertEqual(errors, "")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
 
     def test_multi_adapter_sessions_are_globally_sorted(self):
         older = SessionTimeline("older", "codex", "m", 1.0, 1.0)

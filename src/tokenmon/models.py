@@ -128,6 +128,7 @@ class TimelineEvent:
     summary: str
     tokens: int | None = None
     duration: float | None = None
+    event_id: str | None = field(default=None, compare=False, repr=False)  # Internal source identity for live follow.
 
 
 @dataclass

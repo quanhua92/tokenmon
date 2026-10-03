@@ -9,7 +9,7 @@ import os
 import re
 import sqlite3
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -65,6 +65,7 @@ class CodexAdapter(BaseAdapter):
 
     def __init__(self, root: Path | str | None = None):
         self._custom_root = Path(root).expanduser().resolve() if root else None
+        self._timeline_sources: dict[str, tuple[Path, str]] = {}
 
     @property
     def name(self) -> str:
@@ -400,6 +401,7 @@ class CodexAdapter(BaseAdapter):
         for session_id, jsonl_path, default_model in sessions:
             try:
                 timeline = self._parse_session_timeline(session_id, jsonl_path, default_model)
+                self._timeline_sources[session_id] = (jsonl_path, default_model)
                 if timeline.events and (min_timestamp is None or timeline.updated_at >= min_timestamp):
                     timelines.append(timeline)
             except Exception as e:
@@ -407,6 +409,13 @@ class CodexAdapter(BaseAdapter):
 
         timelines.sort(key=lambda t: t.updated_at, reverse=True)
         return timelines
+
+    def read_session(self, session_id: str) -> SessionTimeline | None:
+        source = self._timeline_sources.get(session_id)
+        if source is None:
+            return super().read_session(session_id)
+        path, model = source
+        return self._parse_session_timeline(session_id, path, model)
 
     def _parse_session_timeline(
         self,
@@ -421,7 +430,8 @@ class CodexAdapter(BaseAdapter):
 
         try:
             with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
+                for record_number, line in enumerate(f):
+                    first_new_event = len(events)
                     line = line.strip()
                     if not line:
                         continue
@@ -558,8 +568,11 @@ class CodexAdapter(BaseAdapter):
                                         summary=f"{summary} ({tokens} tokens)",
                                         tokens=tokens,
                                         duration=ev.duration,
+                                        event_id=ev.event_id,
                                     )
                                     break
+                    for idx in range(first_new_event, len(events)):
+                        events[idx] = replace(events[idx], event_id=f"record:{record_number}:{events[idx].kind}")
         except Exception:
             pass
 
