@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from llm_monitor.models import GenerationSpan, SessionTimeline
+from tokenmon.models import GenerationSpan, SessionTimeline
 
 
 class BaseAdapter(ABC):

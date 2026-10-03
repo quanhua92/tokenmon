@@ -9,23 +9,23 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from llm_monitor import __version__
-from llm_monitor.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
-from llm_monitor.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
-from llm_monitor.cli import ASCII_LOGO, format_recent_span, format_sessions_table, format_table, format_timeline_view
-from llm_monitor.models import GenerationSpan, SessionTimeline
+from tokenmon import __version__
+from tokenmon.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
+from tokenmon.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
+from tokenmon.cli import ASCII_LOGO, format_recent_span, format_sessions_table, format_table, format_timeline_view
+from tokenmon.models import GenerationSpan, SessionTimeline
 
 
 class MonitorShell(cmd.Cmd):
-    """Interactive command-line shell for llm-monitor using Python standard library cmd."""
+    """Interactive command-line shell for tokenmon using Python standard library cmd."""
 
     intro = (
         f"\n\033[1;32m{ASCII_LOGO}\033[0m\n\n"
-        f"\033[1;32m⚡ llm-monitor interactive shell v{__version__}\033[0m\n"
+        f"\033[1;32m⚡ TokenMon interactive shell v{__version__}\033[0m\n"
         "Type \033[1mhelp\033[0m or \033[1m?\033[0m to list commands, or \033[1mexit\033[0m to quit.\n"
         "Tab-completion is enabled for commands and session IDs.\n"
     )
-    prompt = "\033[1;34m(llm-monitor)\033[0m "
+    prompt = "\033[1;34m(tokenmon)\033[0m "
 
     def __init__(self, adapters: list[BaseAdapter], home: str | None = None):
         super().__init__()
@@ -186,7 +186,7 @@ Usage: watch [interval_seconds] [window]"""
                 now = time.time()
                 spans = self._get_spans()
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                print(f"⚡ llm-monitor Live Dashboard [{now_str}] (Interval: {interval}s | Ctrl+C to return)\n")
+                print(f"⚡ TokenMon Live Dashboard [{now_str}] (Interval: {interval}s | Ctrl+C to return)\n")
 
                 if spans:
                     analysis = analyze_windows(spans, window_names=[window], now=now)

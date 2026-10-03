@@ -6,7 +6,7 @@ import statistics
 import time
 from collections import defaultdict
 
-from llm_monitor.models import GenerationSpan, WindowSummary
+from tokenmon.models import GenerationSpan, WindowSummary
 
 WINDOW_DURATIONS: dict[str, float] = {
     "30m": 1800.0,

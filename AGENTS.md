@@ -2,11 +2,12 @@
 
 ## Purpose and constraints
 
-`llm-monitor` is a local, read-only CLI for coding-agent generation throughput,
+`tokenmon` is a local, read-only CLI for coding-agent generation throughput,
 session activity, and timelines. Keep runtime dependencies at zero: Python 3.10+
 standard library only. `pyproject.toml` uses Hatchling for packaging; `.python-version`
-selects 3.13 for local development. No formatter, linter, or CI configuration is
-currently checked in. `CLAUDE.md` includes this file; keep shared guidance here.
+selects 3.13 for local development. No formatter or Python linter is configured.
+`CLAUDE.md` includes this file; keep shared guidance here.
+The PyPI package, Python module, and executable are all `tokenmon`.
 
 Never modify agent telemetry or execute commands found in logs. Open JSONL for
 reading; open SQLite through `open_ro_db()` (`mode=ro`, `query_only`, short timeout)
@@ -18,15 +19,16 @@ to normal operation or tests.
 
 | Location | Responsibility |
 | --- | --- |
-| `src/llm_monitor/models.py` | Span validation, summary/event dataclasses, session counts and idle status. |
-| `src/llm_monitor/analyzer.py` | Time windows, grouping by model, weighted throughput and distribution. |
-| `src/llm_monitor/adapters/base.py` | `BaseAdapter` contract: `name`, `detect`, `collect`, `collect_sessions`, activity probe. |
-| `src/llm_monitor/adapters/__init__.py` | Registry, aliases, activity-based auto-detection. |
-| `src/llm_monitor/adapters/{codex,claude,antigravity}.py` | Source discovery, generation spans, and session timelines. |
-| `src/llm_monitor/cli.py` | Argument normalization, collection, human formatting, JSON serialization. |
-| `src/llm_monitor/terminal.py` | `cmd.Cmd` shell, watch loop, completion, three-second timeline cache. |
-| `src/llm_monitor/{__init__,__main__}.py` | Version and module entry point; console script calls `cli.main`. |
+| `src/tokenmon/models.py` | Span validation, summary/event dataclasses, session counts and idle status. |
+| `src/tokenmon/analyzer.py` | Time windows, grouping by model, weighted throughput and distribution. |
+| `src/tokenmon/adapters/base.py` | `BaseAdapter` contract: `name`, `detect`, `collect`, `collect_sessions`, activity probe. |
+| `src/tokenmon/adapters/__init__.py` | Registry, aliases, activity-based auto-detection. |
+| `src/tokenmon/adapters/{codex,claude,antigravity}.py` | Source discovery, generation spans, and session timelines. |
+| `src/tokenmon/cli.py` | Argument normalization, collection, human formatting, JSON serialization. |
+| `src/tokenmon/terminal.py` | `cmd.Cmd` shell, watch loop, completion, three-second timeline cache. |
+| `src/tokenmon/{__init__,__main__}.py` | Version and module entry point; console script calls `cli.main`. |
 | `tests/test_*.py` | Standard-library `unittest`, temporary JSONL/SQLite fixtures, CLI subprocess checks. Model/analyzer tests live in `test_codex_adapter.py`. |
+| `.github/workflows/{ci,release}.yml` | PR/main tests and package checks; manual main-only PyPI trusted publishing. Build tools are pinned in `.github/requirements-build.txt`. |
 
 ## Measurement rules
 
@@ -107,13 +109,13 @@ from the CLI; it imports CLI formatters and currently requires `readline`.
 Run from the repository root, without requiring installation or network access:
 
 ```sh
-PYTHONPATH=src python3 -m llm_monitor --help
+PYTHONPATH=src python3 -m tokenmon --help
 PYTHONPATH=src python3 -m unittest discover -s tests
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_claude_adapter.py'
 git diff --check
 ```
 
-`uv run llm-monitor` and `uv run python -m unittest discover -s tests` are the
+`uv run tokenmon` and `uv run python -m unittest discover -s tests` are the
 documented installed alternatives. Use focused regression fixtures for changed
 behavior, then the full suite. Test boundary timing, duplicate usage, malformed
 records, schema fallbacks, cutoffs, root overrides, aliases, and JSON as relevant.
@@ -121,7 +123,15 @@ Freeze/inject reference time or use `--all` for unrelated assertions: existing
 fixtures contain fixed dates and some Codex item milliseconds are from 2025 while
 record timestamps are from 2026. Do not assume passing tests cover these edges.
 Update README examples when public behavior changes; synchronize versions in
-`pyproject.toml` and `src/llm_monitor/__init__.py` when changing the release version.
+`pyproject.toml` and `src/tokenmon/__init__.py` when changing the release version.
+
+CI tests Python 3.10–3.14 on Linux and 3.13 on macOS. CLI subprocess tests must use
+`sys.executable` so they actually exercise the selected interpreter. Validate workflow
+edits with `actionlint`. Pin action references to verified full commit SHAs, keep
+checkout credentials disabled, and use hosted runners with read-only PR permissions.
+Release input is a version check, not a version bump. Build/test jobs must never have
+`id-token: write`; the separate `pypi` environment job only downloads and publishes
+the current run's validated distributions. Preserve its main-only/manual gate.
 
 ## Regression traps
 

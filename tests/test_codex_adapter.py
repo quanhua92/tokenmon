@@ -1,4 +1,4 @@
-"""Unit tests for llm-monitor models, analyzer, and CodexAdapter."""
+"""Unit tests for tokenmon models, analyzer, and CodexAdapter."""
 
 import json
 import sqlite3
@@ -7,9 +7,9 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from llm_monitor.adapters.codex import CodexAdapter
-from llm_monitor.analyzer import analyze_windows, filter_by_window, summarize_spans
-from llm_monitor.models import GenerationSpan
+from tokenmon.adapters.codex import CodexAdapter
+from tokenmon.analyzer import analyze_windows, filter_by_window, summarize_spans
+from tokenmon.models import GenerationSpan
 
 
 class TestModelsAndAnalyzer(unittest.TestCase):

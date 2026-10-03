@@ -1,4 +1,4 @@
-"""Command line interface for llm-monitor."""
+"""Command line interface for tokenmon."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from llm_monitor import __version__
-from llm_monitor.adapters import ADAPTER_REGISTRY, detect_available_adapters, get_adapter
-from llm_monitor.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
-from llm_monitor.models import GenerationSpan, SessionTimeline, WindowSummary
+from tokenmon import __version__
+from tokenmon.adapters import ADAPTER_REGISTRY, detect_available_adapters, get_adapter
+from tokenmon.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
+from tokenmon.models import GenerationSpan, SessionTimeline, WindowSummary
 
 logger = logging.getLogger(__name__)
 
@@ -261,10 +261,12 @@ def format_timeline_view(timeline: SessionTimeline, now: float) -> str:
 
 
 ASCII_LOGO = r"""
-   __    __   __  ___
-  / /   / /  /  |/  /   M O N I T O R
- / /___/ /__/ /|_/ /    ── ⚡ Agent TPS ──
-/_____/____/_/  /_/
+  ______      __              __  ___
+ /_  __/___  / /_____  ____  /  |/  /___  ____
+  / / / __ \/ //_/ _ \/ __ \/ /|_/ / __ \/ __ \
+ / / / /_/ / ,< /  __/ / / / /  / / /_/ / / / /
+/_/  \____/_/|_|\___/_/ /_/_/  /_/\____/_/ /_/
+             TokenMon · Agent TPS
 """.strip("\n")
 
 
@@ -276,30 +278,23 @@ STATS_GUIDE = """\
   • Median is the middle stream. It is less affected by one very slow or very fast stream.
   • Windows are 30m, 1d, 7d and 30d. Use --window to pick one, or --all for full history.
 
-➡️  Next: `llm-monitor ps` lists sessions · `llm-monitor logs` shows a timeline · add --json for scripts.
+➡️  Next: `tokenmon ps` lists sessions · `tokenmon logs` shows a timeline · add --json for scripts.
 """
 
 
 def print_banner(color: bool = True) -> None:
     """Print a compact, modern ASCII banner suitable for standard and narrow split panes."""
-    lines = ASCII_LOGO.splitlines()
     if color and sys.stdout.isatty():
         green = "\033[1;32m"
         reset = "\033[0m"
-        dim = "\033[2m"
-        print()
-        print(f"{green}{lines[0]}{reset}")
-        print(f"{green}{lines[1][:21]}{reset}\033[1m{lines[1][21:]}{reset}")
-        print(f"{green}{lines[2][:21]}{reset}{dim}{lines[2][21:]}{reset}")
-        print(f"{green}{lines[3]}{reset}")
-        print()
+        print(f"\n{green}{ASCII_LOGO}{reset}\n")
     else:
         print(f"\n{ASCII_LOGO}\n")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="llm-monitor",
+        prog="tokenmon",
         description="Monitor token throughput, session activity, and timelines for local AI coding agents.",
     )
     parser.add_argument(
@@ -555,7 +550,7 @@ def main() -> int:
 
     # Handle interactive shell
     if cmd == "interactive":
-        from llm_monitor.terminal import run_shell
+        from tokenmon.terminal import run_shell
         return run_shell(adapters, home=args.home)
 
     now = time.time()
@@ -690,7 +685,7 @@ def main() -> int:
         print(f"\n📂 Active & Recent Sessions ({len(timelines)} found):")
         if timelines:
             print(format_sessions_table(timelines, now, compact=compact_flag))
-            print("Tip: Run `llm-monitor timeline <SESSION_ID>` (or `llm-monitor logs <SESSION_ID>`) to see full event chronology.\n")
+            print("Tip: Run `tokenmon timeline <SESSION_ID>` (or `tokenmon logs <SESSION_ID>`) to see full event chronology.\n")
         else:
             print("No sessions found.")
         return 0
@@ -816,7 +811,7 @@ def main() -> int:
 
     # Human-readable terminal output
     active_names = ", ".join(a.name for a in adapters)
-    print(f"\n⚡ llm-monitor v{__version__} [Agents: {active_names}]")
+    print(f"\n⚡ TokenMon v{__version__} [Agents: {active_names}]")
     print(f"📊 Inspected: {len(all_spans)} output streams across up to {args.tasks} sessions\n")
 
     if not all_spans:
@@ -845,7 +840,7 @@ def main() -> int:
             print(format_session_card(t, now))
             print()
         latest_id = timelines[0].session_id[:12]
-        print(f"💡 Tip: Run `llm-monitor timeline {latest_id}` for full step-by-step chronology.\n")
+        print(f"💡 Tip: Run `tokenmon timeline {latest_id}` for full step-by-step chronology.\n")
 
     print(STATS_GUIDE)
     return 0

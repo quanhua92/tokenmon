@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from llm_monitor.adapters.base import BaseAdapter
-from llm_monitor.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
+from tokenmon.adapters.base import BaseAdapter
+from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
 
 logger = logging.getLogger(__name__)
 

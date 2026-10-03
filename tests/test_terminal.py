@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_monitor.adapters.codex import CodexAdapter
-from llm_monitor.terminal import MonitorShell
+from tokenmon.adapters.codex import CodexAdapter
+from tokenmon.terminal import MonitorShell
 
 
 class TestTerminalShell(unittest.TestCase):

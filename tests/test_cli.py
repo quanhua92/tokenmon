@@ -1,16 +1,18 @@
-"""Integration tests for llm-monitor CLI."""
+"""Integration tests for tokenmon CLI."""
 
 import json
 import io
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from llm_monitor.cli import main
-from llm_monitor.models import SessionTimeline
+from tokenmon.cli import main
+from tokenmon.models import SessionTimeline
 
 
 class TestCLIIntegration(unittest.TestCase):
@@ -20,26 +22,32 @@ class TestCLIIntegration(unittest.TestCase):
         sessions_dir = self.root / "sessions"
         sessions_dir.mkdir()
         session_file = sessions_dir / "cli_test.jsonl"
+        # Keep default rolling-window tests valid on any CI date.
+        started_at = int(time.time()) - 60
+
+        def timestamp(offset):
+            return datetime.fromtimestamp(started_at + offset, tz=timezone.utc).isoformat()
+
         records = [
-            {"type": "session_meta", "payload": {"id": "cli_test", "cwd": "/tmp/demo-project"}, "timestamp": "2026-10-03T09:59:59Z"},
-            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-1"}, "timestamp": "2026-10-03T10:00:00Z"},
-            {"type": "turn_context", "payload": {"turn_id": "turn-1", "model": "gpt-5"}, "timestamp": "2026-10-03T10:00:01Z"},
-            {"type": "response_item", "payload": {"type": "message", "role": "assistant", "id": "item-1"}, "timestamp": "2026-10-03T10:00:02Z"},
+            {"type": "session_meta", "payload": {"id": "cli_test", "cwd": "/tmp/demo-project"}, "timestamp": timestamp(-1)},
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-1"}, "timestamp": timestamp(0)},
+            {"type": "turn_context", "payload": {"turn_id": "turn-1", "model": "gpt-5"}, "timestamp": timestamp(1)},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant", "id": "item-1"}, "timestamp": timestamp(2)},
             {
                 "type": "event_msg",
                 "payload": {
                     "type": "item_completed",
                     "turn_id": "turn-1",
-                    "started_at_ms": 1759485602000,
-                    "completed_at_ms": 1759485604000,
+                    "started_at_ms": (started_at + 2) * 1000,
+                    "completed_at_ms": (started_at + 4) * 1000,
                     "item": {"id": "item-1", "type": "AgentMessage"},
                 },
-                "timestamp": "2026-10-03T10:00:04Z",
+                "timestamp": timestamp(4),
             },
             {
                 "type": "token_usage_record",
                 "payload": {"response_id": "resp-cli", "usage": {"output_tokens": 120}},
-                "timestamp": "2026-10-03T10:00:04Z",
+                "timestamp": timestamp(4),
             },
         ]
         with session_file.open("w") as f:
@@ -60,7 +68,7 @@ class TestCLIIntegration(unittest.TestCase):
             (["ps", "--json", "--all"], ["newer", "older"]),
             (["logs", "--window", "all", "--json"], ["newer", "older"]),
         ]:
-            with self.subTest(args=args), patch.object(sys, "argv", ["llm-monitor"] + args), patch("llm_monitor.cli.detect_available_adapters", return_value=adapters), patch("sys.stdout", new=io.StringIO()) as output:
+            with self.subTest(args=args), patch.object(sys, "argv", ["tokenmon"] + args), patch("tokenmon.cli.detect_available_adapters", return_value=adapters), patch("sys.stdout", new=io.StringIO()) as output:
                 self.assertEqual(main(), 0)
                 result = json.loads(output.getvalue())
             selected = [timeline["session_id"] for timeline in result] if isinstance(result, list) else result["session_id"]
@@ -69,9 +77,9 @@ class TestCLIIntegration(unittest.TestCase):
     def test_cli_table_output(self):
         # Test bare alias to stats
         cmd = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "codex",
             "--home",
             str(self.root),
@@ -85,9 +93,9 @@ class TestCLIIntegration(unittest.TestCase):
 
         # Test explicit stats subcommand
         cmd_stats = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "stats",
             "codex",
             "--home",
@@ -101,9 +109,9 @@ class TestCLIIntegration(unittest.TestCase):
 
     def test_cli_json_output(self):
         cmd = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "stats",
             "codex",
             "--home",
@@ -126,9 +134,9 @@ class TestCLIIntegration(unittest.TestCase):
 
     def test_cli_sessions_list(self):
         cmd = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "sessions",
             "codex",
             "--home",
@@ -142,9 +150,9 @@ class TestCLIIntegration(unittest.TestCase):
 
         # Test Docker alias 'ps'
         cmd_ps = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "ps",
             "codex",
             "--home",
@@ -156,9 +164,9 @@ class TestCLIIntegration(unittest.TestCase):
 
     def test_cli_timeline_view(self):
         cmd = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "timeline",
             "cli_test",
             "--home",
@@ -172,9 +180,9 @@ class TestCLIIntegration(unittest.TestCase):
 
         # Test Docker alias 'logs' (default to latest)
         cmd_logs = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "logs",
             "--home",
             str(self.root),
@@ -185,9 +193,9 @@ class TestCLIIntegration(unittest.TestCase):
 
     def test_cli_timeline_window_export(self):
         cmd = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "timeline",
             "--window",
             "1d",
@@ -207,9 +215,9 @@ class TestCLIIntegration(unittest.TestCase):
     def test_cli_compact_and_wide_flags(self):
         # Test --compact flag with stats
         cmd_compact = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "stats",
             "codex",
             "--home",
@@ -223,9 +231,9 @@ class TestCLIIntegration(unittest.TestCase):
 
         # Test --wide flag with stats
         cmd_wide = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "stats",
             "codex",
             "--home",
@@ -238,7 +246,7 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("Range", res_wide.stdout)
 
     def test_cli_json_includes_session_cwd(self):
-        base = ["python3", "-m", "llm_monitor"]
+        base = [sys.executable, "-m", "tokenmon"]
         tail = ["codex", "--home", str(self.root), "--json", "--all"]
 
         res = subprocess.run(base + ["ps"] + tail, capture_output=True, text=True, env={"PYTHONPATH": "src"})
@@ -255,7 +263,7 @@ class TestCLIIntegration(unittest.TestCase):
 
     def test_cli_all_lists_each_adapter_once(self):
         (self.root / "conversations").mkdir()  # makes the Antigravity adapter detectable
-        cmd = ["python3", "-m", "llm_monitor", "stats", "all", "--home", str(self.root), "--json", "--all"]
+        cmd = [sys.executable, "-m", "tokenmon", "stats", "all", "--home", str(self.root), "--json", "--all"]
         res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res.returncode, 0)
         agents = json.loads(res.stdout)["meta"]["agents"]
@@ -265,9 +273,9 @@ class TestCLIIntegration(unittest.TestCase):
     def test_cli_ascii_banner(self):
         # Human mode should display the ASCII banner
         cmd = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "stats",
             "codex",
             "--home",
@@ -275,14 +283,14 @@ class TestCLIIntegration(unittest.TestCase):
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res.returncode, 0)
-        self.assertIn("M O N I T O R", res.stdout)
+        self.assertIn("TokenMon", res.stdout)
         self.assertIn("Agent TPS", res.stdout)
 
         # JSON mode must NOT output the ASCII banner (must be clean JSON)
         cmd_json = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "stats",
             "codex",
             "--home",
@@ -291,7 +299,7 @@ class TestCLIIntegration(unittest.TestCase):
         ]
         res_json = subprocess.run(cmd_json, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res_json.returncode, 0)
-        self.assertNotIn("M O N I T O R", res_json.stdout)
+        self.assertNotIn("TokenMon", res_json.stdout)
         self.assertNotIn("Agent TPS", res_json.stdout)
         # Verify valid JSON parse
         parsed = json.loads(res_json.stdout)
@@ -308,9 +316,9 @@ class TestCLIIntegration(unittest.TestCase):
 
         # The CLI should not crash; it should log/skip corrupted file and parse valid session
         cmd = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "stats",
             "codex",
             "--home",
@@ -322,9 +330,9 @@ class TestCLIIntegration(unittest.TestCase):
 
         # Also test sessions command with corrupted file present
         cmd_ps = [
-            "python3",
+            sys.executable,
             "-m",
-            "llm_monitor",
+            "tokenmon",
             "ps",
             "codex",
             "--home",
@@ -337,4 +345,3 @@ class TestCLIIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

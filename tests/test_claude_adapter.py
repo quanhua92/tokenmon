@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from llm_monitor.adapters.claude import ClaudeAdapter
+from tokenmon.adapters.claude import ClaudeAdapter
 
 
 class TestClaudeAdapter(unittest.TestCase):

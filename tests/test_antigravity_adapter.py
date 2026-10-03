@@ -2,11 +2,12 @@
 
 import sqlite3
 import unittest
+from contextlib import closing
 from pathlib import Path
 import tempfile
 import shutil
 
-from llm_monitor.adapters.antigravity import (
+from tokenmon.adapters.antigravity import (
     AntigravityAdapter,
     parse_proto_fields,
     parse_proto_timestamp,
@@ -81,9 +82,10 @@ class TestAntigravityAdapter(unittest.TestCase):
     def test_session_cutoff_uses_event_time_and_keeps_boundary(self):
         # Minimal Timestamp protos: seconds 1000 and 2000, wrapped in metadata field 1.
         for session_id, timestamp in [("older", b"\x08\xe8\x07"), ("boundary", b"\x08\xd0\x0f")]:
-            with sqlite3.connect(self.conv_dir / f"{session_id}.db") as conn:
+            with closing(sqlite3.connect(self.conv_dir / f"{session_id}.db")) as conn:
                 conn.execute("CREATE TABLE steps (idx integer, step_type integer, metadata blob, step_payload blob)")
                 conn.execute("INSERT INTO steps VALUES (?, ?, ?, ?)", (1, 14, b"\x0a\x03" + timestamp, None))
+                conn.commit()
         adapter = AntigravityAdapter(root=self.temp_dir)
         self.assertEqual(len(adapter.collect_sessions()), 2)
         self.assertEqual([timeline.session_id for timeline in adapter.collect_sessions(min_timestamp=2000)], ["boundary"])

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Type
 
-from llm_monitor.adapters.antigravity import AntigravityAdapter
-from llm_monitor.adapters.base import BaseAdapter
-from llm_monitor.adapters.claude import ClaudeAdapter
-from llm_monitor.adapters.codex import CodexAdapter
+from tokenmon.adapters.antigravity import AntigravityAdapter
+from tokenmon.adapters.base import BaseAdapter
+from tokenmon.adapters.claude import ClaudeAdapter
+from tokenmon.adapters.codex import CodexAdapter
 
 import logging
 import time
