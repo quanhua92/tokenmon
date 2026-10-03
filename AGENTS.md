@@ -29,6 +29,7 @@ to normal operation or tests.
 | `src/tokenmon/{__init__,__main__}.py` | Version and module entry point; console script calls `cli.main`. |
 | `tests/test_*.py` | Standard-library `unittest`, temporary JSONL/SQLite fixtures, CLI subprocess checks. Model/analyzer tests live in `test_codex_adapter.py`. |
 | `.github/workflows/{ci,release}.yml` | PR/main tests and package checks; manual main-only PyPI trusted publishing. Build tools are pinned in `.github/requirements-build.txt`. |
+| `.github/RELEASING.md` | Maintainer instructions for publisher setup, releases, and PyPI descriptions. |
 
 ## Measurement rules
 

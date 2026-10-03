@@ -1,7 +1,7 @@
 [project]
 name = "tokenmon"
 version = "0.1.0"
-description = "First-principles zero-dependency CLI monitor for local AI coding agent telemetry and token throughput"
+description = "A fast, zero-dependency command-line monitor for local AI coding agents."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
