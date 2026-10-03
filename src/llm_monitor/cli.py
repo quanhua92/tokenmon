@@ -185,6 +185,44 @@ def format_recent_span(s: GenerationSpan, compact: bool | None = None) -> str:
         )
 
 
+def format_session_card(t: SessionTimeline, now: float) -> str:
+    mins = int(t.session_duration // 60)
+    if mins >= 60:
+        hrs = mins // 60
+        rem_m = mins % 60
+        dur_str = f"{hrs}h {rem_m:02d}m"
+    elif mins > 0:
+        dur_str = f"{mins}m"
+    else:
+        dur_str = f"{int(t.session_duration)}s"
+
+    tok_count = t.total_tokens
+    if tok_count >= 1_000_000:
+        tok_str = f"{tok_count / 1_000_000:.1f}M"
+    elif tok_count >= 1_000:
+        tok_str = f"{tok_count / 1_000:.1f}k"
+    else:
+        tok_str = str(tok_count)
+
+    status_raw = t.status(now)
+    if status_raw.startswith("Active"):
+        status_badge = "\033[1;32m● Active\033[0m"
+    elif status_raw.startswith("Idle"):
+        status_badge = f"\033[1;33m○ {status_raw}\033[0m"
+    else:
+        status_badge = f"\033[2m◌ {status_raw}\033[0m"
+
+    tool_part = f", {t.tool_calls} tools" if t.tool_calls > 0 else ""
+    user_part = f"👤 User: {t.user_messages} prompt{'s' if t.user_messages != 1 else ''}"
+    agent_part = f"🤖 Agent: {t.assistant_messages} turns{tool_part} ({tok_str} tok)"
+
+    lines = [
+        f"  📌 \033[1m{t.session_id[:12]}\033[0m  ({t.model})  {status_badge}",
+        f"     {user_part}  │  {agent_part}  │  ⏱️ {dur_str} elapsed",
+    ]
+    return "\n".join(lines)
+
+
 def format_timeline_view(timeline: SessionTimeline, now: float) -> str:
     lines = [
         f"🔍 Session Timeline: \033[1m{timeline.session_id}\033[0m ({timeline.model})",
@@ -464,7 +502,7 @@ def main() -> int:
             print(format_recent_span(s, compact=compact_flag))
         print()
 
-    # Recent Session Timelines preview
+    # Recent Sessions & User Interactions overview
     timelines: list[SessionTimeline] = []
     for adapter in adapters:
         timelines.extend(adapter.collect_sessions(max_sessions=5))
@@ -472,10 +510,12 @@ def main() -> int:
 
     if timelines:
         preview_count = min(3, len(timelines))
-        print(f"🔍 Recent Session Timelines (latest {preview_count}):")
-        print(format_sessions_table(timelines[:preview_count], now, compact=compact_flag))
-        latest_id = timelines[0].session_id[:8]
-        print(f"💡 Tip: Run `llm-monitor --timeline` (or `--timeline {latest_id}`) for full event breakdown.\n")
+        print(f"🔍 Recent Sessions & User Interactions (latest {preview_count}):\n")
+        for t in timelines[:preview_count]:
+            print(format_session_card(t, now))
+            print()
+        latest_id = timelines[0].session_id[:12]
+        print(f"💡 Tip: Run `llm-monitor --timeline {latest_id}` for full step-by-step chronology.\n")
 
     return 0
 
