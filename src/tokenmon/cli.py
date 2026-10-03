@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from tokenmon import __version__
 from tokenmon.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
 from tokenmon.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
-from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, WindowSummary, recorded_speed_mode
+from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, WindowSummary, recorded_speed_mode, format_session_duration
 
 logger = logging.getLogger(__name__)
 
@@ -114,14 +114,6 @@ def format_table(summaries: list[WindowSummary], compact: bool | None = None) ->
         )
     lines.append(make_line(("└", "┴", "─", "┘")))
     return "\n".join(lines)
-
-
-def format_session_duration(seconds: float) -> str:
-    mins, secs = divmod(int(seconds), 60)
-    if mins >= 60:
-        hours, mins = divmod(mins, 60)
-        return f"{hours}h {mins:02d}m {secs:02d}s"
-    return f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
 
 def format_sessions_table(
@@ -225,15 +217,7 @@ def format_recent_span(s: GenerationSpan, compact: bool | None = None) -> str:
 
 
 def format_session_card(t: SessionTimeline, now: float) -> str:
-    mins = int(t.session_duration // 60)
-    if mins >= 60:
-        hrs = mins // 60
-        rem_m = mins % 60
-        dur_str = f"{hrs}h {rem_m:02d}m"
-    elif mins > 0:
-        dur_str = f"{mins}m"
-    else:
-        dur_str = f"{int(t.session_duration)}s"
+    dur_str = format_session_duration(t.session_duration)
 
     tok_count = t.total_tokens
     if tok_count >= 1_000_000:

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Format session Status idle times as hours, minutes, and seconds across session lists, cards, and timelines; include days for durations of 24 hours or more.
+- Use the shared duration format for recent session cards, including seconds and days when applicable.
+
 ## [0.1.3] — 2026-10-04
 
 - Format stats duration as hours, minutes, and seconds while keeping JSON durations numeric.

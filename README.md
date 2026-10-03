@@ -194,6 +194,12 @@ tokenmon ps --window 1d
 tokenmon ps codex
 ```
 
+The Status column shows time since the last event using hours, minutes, and
+seconds, for example `Idle (2m 05s)` or `Inactive (idle 3h 04m 05s)`.
+Durations of 24 hours or more include days, for example
+`Inactive (idle 7d 00h 14m 19s)`. Stats total time, session durations, and recent
+session cards use the same duration format.
+
 ### Event Timelines (`timeline`, `logs`, `log`)
 
 See the chronological step-by-step history of prompts, model thoughts, responses, and tool calls:

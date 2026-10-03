@@ -68,6 +68,11 @@ to normal operation or tests.
 - Human stats total time uses the shared hours/minutes/seconds formatter; JSON
   durations remain numeric seconds. Explain that overlapping spans sum separately
   and Claude single-record `turn-span` is a latency-inclusive estimate.
+- Session status idle times use the same formatter in `models.py`, including
+  session lists, cards, timelines, and JSON status strings. Keep numeric JSON
+  `idle_time_seconds` values in seconds and preserve activity thresholds. Durations
+  of 24 hours or more include days; recent session card elapsed times also use
+  this formatter.
 
 ## Adapter specifics
 

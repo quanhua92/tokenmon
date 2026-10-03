@@ -10,6 +10,17 @@ MIN_MEASURED_DURATION: float = 1.0  # Spans under 1.0s are ignored to eliminate 
 MAX_REALISTIC_TPS: float = 400.0    # Ceiling to reject sub-millisecond collapsed timestamps
 
 
+def format_session_duration(seconds: float) -> str:
+    mins, secs = divmod(int(seconds), 60)
+    if mins >= 60:
+        hours, mins = divmod(mins, 60)
+        if hours >= 24:
+            days, hours = divmod(hours, 24)
+            return f"{days}d {hours:02d}h {mins:02d}m {secs:02d}s"
+        return f"{hours}h {mins:02d}m {secs:02d}s"
+    return f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+
+
 @dataclass(frozen=True)
 class GenerationSpan:
     """Atomic telemetry record for a single model generation stream."""
@@ -243,7 +254,7 @@ class SessionTimeline:
         idle_s = self.idle_time(now)
         if idle_s < 120.0:
             return "Active"
-        minutes = int(idle_s // 60)
+        duration = format_session_duration(idle_s)
         if idle_s >= inactive_threshold:
-            return f"Inactive (idle {minutes}m)"
-        return f"Idle ({minutes}m)"
+            return f"Inactive (idle {duration})"
+        return f"Idle ({duration})"
