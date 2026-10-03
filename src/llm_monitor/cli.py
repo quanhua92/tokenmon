@@ -86,6 +86,14 @@ def format_table(summaries: list[WindowSummary], compact: bool | None = None) ->
     return "\n".join(lines)
 
 
+def format_session_duration(seconds: float) -> str:
+    mins, secs = divmod(int(seconds), 60)
+    if mins >= 60:
+        hours, mins = divmod(mins, 60)
+        return f"{hours}h {mins:02d}m"
+    return f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+
+
 def format_sessions_table(
     timelines: list[SessionTimeline],
     now: float,
@@ -99,9 +107,7 @@ def format_sessions_table(
         headers = ["Session", "Model", "Turns", "Tokens", "Duration", "Status"]
         rows = []
         for t in timelines:
-            mins = int(t.session_duration // 60)
-            secs = int(t.session_duration % 60)
-            dur_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            dur_str = format_session_duration(t.session_duration)
             rows.append(
                 [
                     t.session_id[:10],
@@ -125,9 +131,7 @@ def format_sessions_table(
         ]
         rows = []
         for t in timelines:
-            mins = int(t.session_duration // 60)
-            secs = int(t.session_duration % 60)
-            dur_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            dur_str = format_session_duration(t.session_duration)
             rows.append(
                 [
                     t.session_id[:16],
