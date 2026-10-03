@@ -11,6 +11,7 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from itertools import product
 from unittest.mock import Mock, patch
 
 from tokenmon.cli import main
@@ -60,10 +61,10 @@ class TestCLIIntegration(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_cli_watch_routes_explicit_alias_and_default_stats_options(self):
-        for prefix in (["stats"], ["top"], []):
-            with self.subTest(prefix=prefix), \
+        for prefix, watch_option in product((["stats"], ["top"], []), ("--watch", "-w")):
+            with self.subTest(prefix=prefix, watch_option=watch_option), \
                     patch.object(sys, "argv", ["tokenmon"] + prefix + [
-                        "codex", "--home", str(self.root), "--watch", "--window", "1d",
+                        "codex", "--home", str(self.root), watch_option, "--window", "1d",
                         "--interval", "5", "--recent", "2", "--tasks", "7", "--wide"]), \
                     patch("tokenmon.live.watch_stats", return_value=0) as watch, \
                     patch("sys.stdout", new=io.StringIO()) as output:
@@ -75,6 +76,17 @@ class TestCLIIntegration(unittest.TestCase):
                     "interval": 5.0, "window": "1d", "include_all": False,
                     "tasks": 7, "recent": 2, "compact": False,
                 })
+
+    def test_short_watch_runs_complete_dashboard(self):
+        with patch.object(sys, "argv", ["tokenmon", "stats", "codex", "-w", "--window", "1d",
+                                       "--home", str(self.root)]), \
+                patch("tokenmon.live.time.sleep", side_effect=KeyboardInterrupt), \
+                patch("sys.stdout", new=io.StringIO()) as output:
+            self.assertEqual(main(), 0)
+        self.assertIn("Recent 1 Generation Streams", output.getvalue())
+        self.assertIn("Recent Sessions & User Interactions", output.getvalue())
+        self.assertIn("60.0 TPS", output.getvalue())
+        self.assertIn("Exited watch mode", output.getvalue())
 
     def test_cli_follow_routes_aliases_and_session_selection_without_history(self):
         for command, target in [("logs", "codex"), ("log", "cli_t"), ("timeline", "latest")]:
@@ -96,8 +108,8 @@ class TestCLIIntegration(unittest.TestCase):
 
     def test_cli_rejects_removed_window_shortcut_and_invalid_live_options(self):
         cases = [
-            ["stats", "-w", "1d"], ["sessions", "-w", "1d"], ["logs", "-w", "1d"],
-            ["stats", "--watch", "--json"], ["logs", "--follow", "--json"],
+            ["sessions", "-w", "1d"], ["logs", "-w", "1d"],
+            ["stats", "--watch", "--json"], ["stats", "-w", "--json"], ["logs", "--follow", "--json"],
             ["logs", "-f", "--window", "1d"], ["logs", "window", "-f"],
         ]
         for command in ("stats", "logs"):

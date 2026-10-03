@@ -2,12 +2,12 @@
 
 ## Unreleased
 
-- Add `stats --watch` with a configurable `--interval` (default: 2 seconds).
+- Add `stats -w` / `--watch` with a configurable `--interval` (default: 2 seconds).
 - Share the stats dashboard with interactive watch, including recent generation streams and session cards.
 - Show recent sessions even when no generation streams are available.
 - Add `logs -f` / `--follow` to append only newly observed events from the session selected at startup.
 - Keep follow attached to its selected source and suppress repeated events after streamed metadata updates.
-- Remove the `-w` window shortcut; use the explicit `--window` option across commands.
+- Repurpose `-w` as the stats watch shortcut; use the explicit `--window` option for time filtering across commands.
 - Reject `--json` in live modes and batch `--window` exports with `--follow`.
 
 ## [0.1.1] — 2026-10-04

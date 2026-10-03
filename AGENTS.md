@@ -99,8 +99,9 @@ Preserve `stats`/`top` (default), `sessions`/`ps`/`ls`, `timeline`/`log`/`logs`,
 default to stats. Timeline accepts an ID/prefix or `latest`, with `--agent` selection;
 an adapter name in its positional slot selects that adapter's latest session.
 
-Time windows use `--window` explicitly; the former `-w` shortcut is removed.
-`stats`/`top` and bare stats invocations accept `--watch` and `--interval` (default
+Time windows use `--window` explicitly; `-w` now means `--watch` on stats and
+does not take a window value. `stats`/`top` and bare stats invocations accept
+`-w`/`--watch` and `--interval` (default
 2 seconds). CLI and shell watch share stats collection/rendering, including recent
 streams and session cards. Recalculate cutoffs each refresh; clear the screen only
 when stdout is a terminal. Show recent sessions even without generation spans.

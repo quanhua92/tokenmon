@@ -100,6 +100,7 @@ tokenmon stats --window 1d
 
 # Refresh the full dashboard every 2 seconds (Ctrl+C to stop)
 tokenmon stats --watch
+tokenmon stats -w
 tokenmon stats --watch --window 1d
 
 # Customize the refresh interval
@@ -122,8 +123,10 @@ session cards together. It redraws the screen in a terminal; redirected output
 appends complete snapshots. Agent selection, `--home`, `--tasks`, `--recent`,
 `--compact`, and `--wide` also work with `--watch`.
 
-Time filtering uses the explicit `--window` option across commands. The former
-`-w` shortcut has been removed; use `--window 1d` in existing commands and scripts.
+`-w` is a shortcut for `--watch` on stats. Time filtering uses the explicit
+`--window` option across commands; replace the former `-w 1d` syntax with
+`--window 1d` in existing commands and scripts. Combine them as
+`tokenmon stats -w --window 1d`.
 
 ### Active & Recent Sessions (`sessions`, `ps`, `ls`)
 

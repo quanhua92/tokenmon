@@ -446,7 +446,7 @@ def main() -> int:
         action="store_true",
         help="Output raw machine-readable JSON",
     )
-    p_stats.add_argument("--watch", action="store_true", help="Refresh the complete stats dashboard until Ctrl+C")
+    p_stats.add_argument("-w", "--watch", action="store_true", help="Refresh the complete stats dashboard until Ctrl+C")
     p_stats.add_argument("--interval", type=positive_interval, default=2.0,
                          help="Watch refresh interval in seconds (default: 2)")
 
