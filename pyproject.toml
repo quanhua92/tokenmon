@@ -1,0 +1,14 @@
+[project]
+name = "llm-monitor"
+version = "0.1.0"
+description = "First-principles zero-dependency CLI monitor for local AI coding agent telemetry and token throughput"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+llm-monitor = "llm_monitor.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
