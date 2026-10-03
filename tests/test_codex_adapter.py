@@ -134,6 +134,45 @@ class TestCodexAdapter(unittest.TestCase):
         self.assertEqual(spans[0].note, "unconfirmed_tool_start")
         self.assertIsNone(spans[0].tps)
 
+    def test_subsecond_duration_is_excluded(self):
+        sessions_dir = self.root / "sessions"
+        sessions_dir.mkdir()
+        session_file = sessions_dir / "task_fast.jsonl"
+
+        # 100 tokens in 0.2s (500 TPS) -> should be excluded by shared < 1s validator
+        records = [
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-fast"}, "timestamp": "2026-10-03T10:00:00Z"},
+            {"type": "turn_context", "payload": {"turn_id": "turn-fast", "model": "o3-mini"}, "timestamp": "2026-10-03T10:00:01Z"},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant", "id": "item-fast"}, "timestamp": "2026-10-03T10:00:02Z"},
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "turn_id": "turn-fast",
+                    "started_at_ms": 1759485602000,
+                    "completed_at_ms": 1759485602200,  # 0.20s duration
+                    "item": {"id": "item-fast", "type": "AgentMessage"},
+                },
+                "timestamp": "2026-10-03T10:00:02.200Z",
+            },
+            {
+                "type": "token_usage_record",
+                "payload": {"response_id": "resp-fast", "usage": {"output_tokens": 100}},
+                "timestamp": "2026-10-03T10:00:02.200Z",
+            },
+        ]
+        with session_file.open("w") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+
+        adapter = CodexAdapter(self.root)
+        spans = adapter.collect()
+        self.assertEqual(len(spans), 1)
+        self.assertFalse(spans[0].is_valid)
+        self.assertEqual(spans[0].note, "duration_under_1s")
+        self.assertIsNone(spans[0].tps)
+
 
 if __name__ == "__main__":
     unittest.main()
+

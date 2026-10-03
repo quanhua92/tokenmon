@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from llm_monitor.adapters.base import BaseAdapter
-from llm_monitor.models import GenerationSpan, SessionTimeline, TimelineEvent
+from llm_monitor.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
 
 
 def parse_timestamp(val: object) -> float | None:
@@ -318,13 +318,11 @@ class CodexAdapter(BaseAdapter):
         item_list = list(items.items())
         first_id, _ = item_list[0]
 
-        is_valid = True
         note = None
         timing_source = "unknown"
-        start_at = 0.0
+        start_at: float | None = None
 
         if first_output_kind in {"function_call", "custom_tool_call"}:
-            is_valid = False
             note = "unconfirmed_tool_start"
 
         first_diag = diag_starts.get(first_id)
@@ -337,47 +335,33 @@ class CodexAdapter(BaseAdapter):
             and first_diag is not None
             and abs(first_diag - first_timing.end) <= 0.001
         ):
-            is_valid = False
-            note = "unconfirmed_initial_span"
+            note = note or "unconfirmed_initial_span"
 
-        if is_valid:
-            if first_diag is not None:
-                start_at = first_diag
-                timing_source = "stream-log"
-            elif first_timing is not None:
-                if first_timing.start == first_timing.end:
-                    is_valid = False
-                    note = "missing_stream_start"
-                else:
-                    start_at = first_timing.start
-                    timing_source = "item-event"
-            else:
-                is_valid = False
-                note = "missing_start"
+        if first_diag is not None:
+            start_at = first_diag
+            timing_source = "stream-log"
+        elif first_timing is not None:
+            if first_timing.start == first_timing.end:
+                note = note or "missing_stream_start"
+            start_at = first_timing.start
+            timing_source = "item-event"
+        else:
+            note = note or "missing_start"
 
         end_at = max(
             timings[i_id].end if i_id in timings else i_at for i_id, i_at in item_list
         )
 
-        if is_valid and (end_at <= start_at or not math.isfinite(start_at)):
-            is_valid = False
-            note = "invalid_duration"
-
-        if tokens is None or not (0 <= tokens <= 2**63 - 1):
-            is_valid = False
-            note = "invalid_tokens"
-
         spans.append(
-            GenerationSpan(
+            create_span(
                 agent=self.name,
                 session_id=session_id,
                 turn_id=turn_id,
                 model=model,
-                tokens=tokens or 0,
+                tokens=tokens,
                 started_at=start_at,
                 ended_at=end_at,
                 timing_source=timing_source,
-                is_valid=is_valid,
                 note=note,
             )
         )

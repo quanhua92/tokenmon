@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
+
+MIN_MEASURED_DURATION: float = 1.0  # Spans under 1.0s are ignored to eliminate jitter
+MAX_REALISTIC_TPS: float = 400.0    # Ceiling to reject sub-millisecond collapsed timestamps
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,67 @@ class GenerationSpan:
         if not self.is_valid or self.duration <= 0.0 or self.tokens <= 0:
             return None
         return self.tokens / self.duration
+
+
+def create_span(
+    agent: str,
+    session_id: str,
+    turn_id: str,
+    model: str,
+    tokens: int | None,
+    started_at: float | None,
+    ended_at: float | None,
+    timing_source: str = "unknown",
+    note: str | None = None,
+    min_duration: float = MIN_MEASURED_DURATION,
+    max_tps: float = MAX_REALISTIC_TPS,
+) -> GenerationSpan:
+    """Centralized validator and builder for all agent generation spans.
+
+    Ensures consistent duration boundaries, minimum sampling thresholds, and
+    sanity limits across all agent adapters (Codex, Claude, etc.).
+    """
+    is_valid = True
+    validated_note = note
+    toks = tokens if isinstance(tokens, int) and tokens >= 0 else 0
+
+    if validated_note is not None:
+        is_valid = False
+    elif (
+        started_at is None
+        or ended_at is None
+        or not math.isfinite(started_at)
+        or not math.isfinite(ended_at)
+    ):
+        is_valid = False
+        validated_note = "missing_timestamp"
+    else:
+        duration = ended_at - started_at
+        if duration <= 0.0:
+            is_valid = False
+            validated_note = "invalid_duration"
+        elif duration < min_duration:
+            is_valid = False
+            validated_note = "duration_under_1s"
+        elif toks <= 0:
+            is_valid = False
+            validated_note = "zero_tokens"
+        elif (toks / duration) > max_tps:
+            is_valid = False
+            validated_note = "unconfirmed_boundary_tps"
+
+    return GenerationSpan(
+        agent=agent,
+        session_id=session_id,
+        turn_id=turn_id,
+        model=model,
+        tokens=toks,
+        started_at=started_at if started_at is not None else 0.0,
+        ended_at=ended_at if ended_at is not None else 0.0,
+        timing_source=timing_source,
+        is_valid=is_valid,
+        note=validated_note,
+    )
 
 
 @dataclass(frozen=True)

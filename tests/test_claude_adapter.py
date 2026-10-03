@@ -166,7 +166,57 @@ class TestClaudeAdapter(unittest.TestCase):
         self.assertEqual(spans[0].note, "duration_under_1s")
         self.assertIsNone(spans[0].tps)
 
+    def test_burst_chunks_under_1s_excluded(self):
+        # Reproduces 43,000 TPS / 30,000 TPS burst flush bug where chunks arrive in 0.01s
+        projects = self.root / "projects" / "test-burst"
+        projects.mkdir(parents=True)
+        session_file = projects / "session-burst.jsonl"
+
+        records = [
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "hi"},
+                "timestamp": "2026-06-13T19:28:10.000Z",
+                "uuid": "u-burst",
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg-burst",
+                    "role": "assistant",
+                    "model": "glm-5.2",
+                    "content": [{"type": "text", "text": "chunk1"}],
+                    "usage": {"output_tokens": 44},
+                },
+                "timestamp": "2026-06-13T19:28:20.000Z",
+                "uuid": "a-1",
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg-burst",
+                    "role": "assistant",
+                    "model": "glm-5.2",
+                    "content": [{"type": "text", "text": "chunk2"}],
+                    "usage": {"output_tokens": 44},
+                },
+                "timestamp": "2026-06-13T19:28:20.010Z",
+                "uuid": "a-2",
+            },
+        ]
+        with session_file.open("w") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+
+        adapter = ClaudeAdapter(self.root)
+        spans = adapter.collect()
+        self.assertEqual(len(spans), 1)
+        self.assertFalse(spans[0].is_valid)
+        self.assertEqual(spans[0].note, "duration_under_1s")
+        self.assertIsNone(spans[0].tps)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

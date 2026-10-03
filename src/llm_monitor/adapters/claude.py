@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from llm_monitor.adapters.base import BaseAdapter
-from llm_monitor.models import GenerationSpan, SessionTimeline, TimelineEvent
+from llm_monitor.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
 
 
 def parse_iso_timestamp(val: object) -> float | None:
@@ -128,14 +128,11 @@ class ClaudeAdapter(BaseAdapter):
             usage = msg.get("usage", {})
             tokens = usage.get("output_tokens") or 0
 
-            # Any stream duration under 1.0s is excluded from speed metrics to avoid
-            # sub-second timestamp jitter and placeholder block flush distortion.
-            chunk_dur = last_at - first_at
-            if len(chunks) > 1 and chunk_dur >= 1.0:
+            if len(chunks) > 1:
                 started_at = first_at
                 ended_at = last_at
                 timing_source = "chunk-stream"
-            elif req_start is not None and (last_at - req_start >= 1.0):
+            elif req_start is not None:
                 started_at = req_start
                 ended_at = last_at
                 timing_source = "turn-span"
@@ -144,23 +141,8 @@ class ClaudeAdapter(BaseAdapter):
                 ended_at = last_at
                 timing_source = "instant"
 
-            duration = ended_at - started_at
-            is_valid = True
-            note = None
-
-            if duration < 1.0:
-                is_valid = False
-                note = "duration_under_1s"
-            elif tokens <= 0:
-                is_valid = False
-                note = "zero_tokens"
-            elif (tokens / duration) > 400.0:
-                # Sanity ceiling: Speeds > 400 TPS indicate collapsed event boundaries.
-                is_valid = False
-                note = "unconfirmed_boundary_tps"
-
             spans.append(
-                GenerationSpan(
+                create_span(
                     agent=self.name,
                     session_id=session_id,
                     turn_id=msg_id,
@@ -169,8 +151,6 @@ class ClaudeAdapter(BaseAdapter):
                     started_at=started_at,
                     ended_at=ended_at,
                     timing_source=timing_source,
-                    is_valid=is_valid,
-                    note=note,
                 )
             )
 
