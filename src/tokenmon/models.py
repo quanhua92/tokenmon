@@ -24,6 +24,9 @@ class GenerationSpan:
     timing_source: str = "unknown"
     is_valid: bool = True
     note: str | None = None
+    reasoning_effort: str | None = None
+    service_tier: str | None = None
+    speed: str | None = None
 
     @property
     def duration(self) -> float:
@@ -39,6 +42,46 @@ class GenerationSpan:
             return None
         return self.tokens / self.duration
 
+    @property
+    def speed_mode(self) -> str | None:
+        """Human label for recorded speed or tier; never inferred from throughput."""
+        return recorded_speed_mode(self.speed, self.service_tier)
+
+
+def recorded_speed_mode(speed: str | None, service_tier: str | None) -> str | None:
+    value = speed or service_tier
+    if value in {"priority", "fast"}:
+        return "fast"
+    if value in {"default", "standard"}:
+        return "standard"
+    return value
+
+
+def generation_metadata(*sources: object) -> tuple[str | None, str | None, str | None]:
+    """Read explicit effort, tier, and speed fields, preferring earlier sources."""
+    effort = tier = speed = None
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        reasoning = source.get("reasoning")
+        output_config = source.get("output_config")
+        collaboration = source.get("collaboration_mode")
+        settings = collaboration.get("settings") if isinstance(collaboration, dict) else None
+        for value in (source.get("reasoning_effort"), source.get("effort"), source.get("thinking_level"),
+                      reasoning.get("effort") if isinstance(reasoning, dict) else None,
+                      output_config.get("effort") if isinstance(output_config, dict) else None,
+                      settings.get("reasoning_effort") if isinstance(settings, dict) else None):
+            if effort is None and isinstance(value, str) and value.strip():
+                effort = value.strip()
+        for key in ("service_tier", "speed"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                if key == "service_tier" and tier is None:
+                    tier = value.strip()
+                elif key == "speed" and speed is None:
+                    speed = value.strip()
+    return effort, tier, speed
+
 
 def create_span(
     agent: str,
@@ -52,6 +95,9 @@ def create_span(
     note: str | None = None,
     min_duration: float = MIN_MEASURED_DURATION,
     max_tps: float = MAX_REALISTIC_TPS,
+    reasoning_effort: str | None = None,
+    service_tier: str | None = None,
+    speed: str | None = None,
 ) -> GenerationSpan:
     """Centralized validator and builder for all agent generation spans.
 
@@ -98,6 +144,9 @@ def create_span(
         timing_source=timing_source,
         is_valid=is_valid,
         note=validated_note,
+        reasoning_effort=reasoning_effort,
+        service_tier=service_tier,
+        speed=speed,
     )
 
 
@@ -129,6 +178,13 @@ class TimelineEvent:
     tokens: int | None = None
     duration: float | None = None
     event_id: str | None = field(default=None, compare=False, repr=False)  # Internal source identity for live follow.
+    reasoning_effort: str | None = None
+    service_tier: str | None = None
+    speed: str | None = None
+
+    @property
+    def speed_mode(self) -> str | None:
+        return recorded_speed_mode(self.speed, self.service_tier)
 
 
 @dataclass
@@ -142,6 +198,13 @@ class SessionTimeline:
     updated_at: float
     events: list[TimelineEvent] = field(default_factory=list)
     cwd: str | None = None  # Working directory of the session, if the agent records it
+    reasoning_effort: str | None = None
+    service_tier: str | None = None
+    speed: str | None = None
+
+    @property
+    def speed_mode(self) -> str | None:
+        return recorded_speed_mode(self.speed, self.service_tier)
 
     @property
     def user_messages(self) -> int:

@@ -14,8 +14,8 @@ from pathlib import Path
 from itertools import product
 from unittest.mock import Mock, patch
 
-from tokenmon.cli import main
-from tokenmon.models import SessionTimeline
+from tokenmon.cli import configuration_metadata, format_recent_span, format_session_duration, format_sessions_table, format_session_card, format_timeline_view, format_table, main
+from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, WindowSummary
 
 
 class TestCLIIntegration(unittest.TestCase):
@@ -142,7 +142,8 @@ class TestCLIIntegration(unittest.TestCase):
             self.assertEqual(main(), 0)
         events = json.loads(output.getvalue())["events"]
         self.assertTrue(events)
-        self.assertEqual(set(events[0]), {"timestamp", "kind", "turn_id", "summary", "tokens", "duration"})
+        self.assertEqual(set(events[0]), {"timestamp", "kind", "turn_id", "summary", "tokens", "duration",
+                                              "reasoning_effort", "service_tier", "speed", "speed_mode"})
 
     def test_follow_subprocess_starts_at_end_flushes_new_events_and_exits_on_sigint(self):
         cmd = [sys.executable, "-m", "tokenmon", "logs", "codex", "--home", str(self.root),
@@ -346,7 +347,7 @@ class TestCLIIntegration(unittest.TestCase):
         res_compact = subprocess.run(cmd_compact, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res_compact.returncode, 0)
         self.assertIn("TPS", res_compact.stdout)
-        self.assertNotIn("Time (s)", res_compact.stdout)
+        self.assertNotIn("│ Time", res_compact.stdout)
 
         # Test --wide flag with stats
         cmd_wide = [
@@ -361,8 +362,91 @@ class TestCLIIntegration(unittest.TestCase):
         ]
         res_wide = subprocess.run(cmd_wide, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res_wide.returncode, 0)
-        self.assertIn("Time (s)", res_wide.stdout)
+        self.assertIn("│ Time", res_wide.stdout)
         self.assertIn("Range", res_wide.stdout)
+
+    def test_stats_duration_uses_hours_minutes_and_seconds(self):
+        summary = WindowSummary("7d", "m", 1, 1, 0, 2749137, 50026.5, 54.95, 55.5, 2.1, 394.0)
+        output = format_table([summary], compact=False)
+        self.assertIn("13h 53m 46s", output)
+        self.assertIn("│ Time", output)
+        self.assertNotIn("50026.5", output)
+        self.assertEqual(format_session_duration(72605.9), "20h 10m 05s")
+        self.assertEqual(format_session_duration(1940.7), "32m 20s")
+        self.assertEqual(format_session_duration(0), "0s")
+
+    def test_recent_stream_shows_effort_and_fast_mode_in_both_layouts(self):
+        span = GenerationSpan("codex", "s", "t", "gpt-6.1-sol", 100, 1, 3,
+                              reasoning_effort="medium", service_tier="priority")
+        for compact in (True, False):
+            with self.subTest(compact=compact):
+                output = format_recent_span(span, compact=compact)
+                self.assertIn("gpt-6.1-sol medium fast", output)
+                self.assertIn("50.0 TPS", output)
+
+    def test_recent_stream_json_contains_optional_metadata(self):
+        path = self.root / "sessions" / "cli_test.jsonl"
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        context = next(record for record in records if record["type"] == "turn_context")
+        context["payload"].update(effort="medium", service_tier="priority")
+        path.write_text("\n".join(json.dumps(record) for record in records))
+        with patch.object(sys, "argv", ["tokenmon", "stats", "codex", "--home", str(self.root), "--json"]), \
+                patch("sys.stdout", new=io.StringIO()) as output:
+            self.assertEqual(main(), 0)
+        stream = json.loads(output.getvalue())["recent_streams"][0]
+        self.assertEqual(stream["reasoning_effort"], "medium")
+        self.assertEqual(stream["service_tier"], "priority")
+        self.assertIsNone(stream["speed"])
+        self.assertEqual(stream["speed_mode"], "fast")
+
+    def test_recorded_metadata_reaches_all_json_views(self):
+        path = self.root / "sessions" / "cli_test.jsonl"
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        next(r for r in records if r["type"] == "turn_context")["payload"].update(
+            effort="medium", service_tier="priority")
+        path.write_text("\n".join(json.dumps(r) for r in records))
+        expected = {"reasoning_effort": "medium", "service_tier": "priority",
+                    "speed": None, "speed_mode": "fast"}
+        for command in (["stats"], ["ps"], ["logs"], ["logs", "window", "--window", "1d", "--agent", "codex"]):
+            args = command + ([] if "--agent" in command else ["codex"])
+            with self.subTest(command=command), patch.object(sys, "argv", ["tokenmon"] + args + [
+                    "--home", str(self.root), "--json"]), patch("sys.stdout", new=io.StringIO()) as output:
+                self.assertEqual(main(), 0)
+                data = json.loads(output.getvalue())
+                if command == ["stats"]:
+                    values = [data["recent_streams"][0], data["recent_sessions"][0],
+                              data["summary"]["1d"], data["models"]["gpt-5"]["1d"]]
+                    self.assertEqual(data["summary"]["1d"]["configurations"], [expected])
+                elif command == ["ps"]:
+                    values = data
+                else:
+                    timeline = data[0] if isinstance(data, list) else data
+                    values = [timeline] + [e for e in timeline["events"] if e["kind"] == "assistant_message"]
+                for value in values:
+                    self.assertEqual({key: value[key] for key in expected}, expected)
+
+    def test_mixed_aggregate_configurations_and_excluded_spans(self):
+        spans = [GenerationSpan("codex", "s", "t", "m", 100, 1, 3,
+                                reasoning_effort=effort, service_tier="priority")
+                 for effort in ("medium", "high")]
+        spans.append(GenerationSpan("codex", "s", "t", "m", 0, 1, 3,
+                                    reasoning_effort="low", note="invalid"))
+        result = configuration_metadata(spans)
+        self.assertIsNone(result["reasoning_effort"])
+        self.assertEqual(result["speed_mode"], "fast")
+        self.assertEqual([c["reasoning_effort"] for c in result["configurations"]], ["high", "medium"])
+        self.assertEqual(configuration_metadata([])["configurations"], [])
+
+    def test_session_and_timeline_human_views_show_recorded_settings(self):
+        event = TimelineEvent(2, "reasoning", "t", "Thinking", reasoning_effort="low", service_tier="default")
+        timeline = SessionTimeline("s", "codex", "m", 1, 3, [event],
+                                   reasoning_effort="medium", service_tier="priority")
+        for compact in (True, False):
+            self.assertIn("m medium fast", format_sessions_table([timeline], 4, compact))
+        self.assertIn("m medium fast", format_session_card(timeline, 4))
+        text = format_timeline_view(timeline, 4)
+        self.assertIn("m medium fast", text)
+        self.assertIn("[low standard]", text)
 
     def test_cli_json_includes_session_cwd(self):
         base = [sys.executable, "-m", "tokenmon"]

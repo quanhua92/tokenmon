@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from contextlib import closing
 
 from tokenmon.adapters.codex import CodexAdapter
 from tokenmon.analyzer import analyze_windows, filter_by_window, summarize_spans
@@ -119,6 +120,87 @@ class TestCodexAdapter(unittest.TestCase):
         ]
         self._write_session(records)
         self.assertEqual(CodexAdapter(self.root).collect_sessions()[0].total_tokens, 120)
+
+    def test_repeated_cumulative_snapshot_does_not_consume_new_reasoning(self):
+        for second_tokens in (120, 200):
+            with self.subTest(second_tokens=second_tokens):
+                records = self._generation_records()
+                initial_count = records[-1]
+                initial_count["payload"]["info"]["total_token_usage"] = {"output_tokens": 120, "input_tokens": 300}
+                start = int(datetime.fromisoformat("2026-10-03T10:00:04+00:00").timestamp() * 1000)
+                records += [
+                    {"type": "event_msg", "timestamp": "2026-10-03T10:00:06Z", "payload": {
+                        "type": "item_completed", "item": {"type": "Reasoning", "id": "r-2"},
+                        "started_at_ms": start, "completed_at_ms": start + 2000}},
+                    {"type": "response_item", "timestamp": "2026-10-03T10:00:06Z",
+                     "payload": {"type": "reasoning", "id": "r-2"}},
+                    {**initial_count, "timestamp": "2026-10-03T10:00:06Z"},
+                    {"type": "event_msg", "timestamp": "2026-10-03T10:00:08Z", "payload": {
+                        "type": "item_completed", "item": {"type": "AgentMessage", "id": "a-2"},
+                        "started_at_ms": start + 2000, "completed_at_ms": start + 4000}},
+                    {"type": "response_item", "timestamp": "2026-10-03T10:00:08Z",
+                     "payload": {"type": "message", "role": "assistant", "id": "a-2"}},
+                    {"type": "event_msg", "timestamp": "2026-10-03T10:00:08Z", "payload": {
+                        "type": "token_count", "info": {"last_token_usage": {"output_tokens": second_tokens},
+                        "total_token_usage": {"output_tokens": 120 + second_tokens, "input_tokens": 600}}}},
+                ]
+                self._write_session(records)
+                adapter = CodexAdapter(self.root)
+                spans = adapter.collect()
+                self.assertEqual([s.tokens for s in spans], [120, second_tokens])
+                self.assertEqual([s.duration for s in spans], [2.0, 4.0])
+                timeline = adapter.collect_sessions()[0]
+                self.assertEqual(timeline.total_tokens, 120 + second_tokens)
+                self.assertTrue(all(e.tokens is None for e in timeline.events if e.kind == "reasoning"))
+                cutoff = start / 1000 + 0.5
+                windowed = adapter.collect(min_timestamp=cutoff)
+                self.assertEqual(len(windowed), 1)
+                self.assertEqual(windowed[0].tokens, second_tokens)
+                self.assertEqual(windowed[0].duration, 4.0)
+                self.assertEqual(windowed[0].model, "test-model")
+
+    def test_native_diagnostic_schema_and_start_before_cutoff(self):
+        self._write_session(self._generation_records())
+        started = datetime.fromisoformat("2026-10-03T10:00:02+00:00").timestamp()
+        with closing(sqlite3.connect(self.root / "logs_1.sqlite")) as conn:
+            conn.execute("CREATE TABLE logs (id INTEGER PRIMARY KEY, target TEXT, ts INTEGER, ts_nanos INTEGER, feedback_log_body TEXT)")
+            conn.execute("INSERT INTO logs VALUES (?, ?, ?, ?, ?)", (1, "codex_core::stream_events_utils", int(started), 125000000,
+                         'Output item item_type="reasoning" item_id="r-1"'))
+            conn.commit()
+        adapter = CodexAdapter(self.root)
+        spans = adapter.collect(min_timestamp=started + 1)
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].timing_source, "stream-log")
+        self.assertAlmostEqual(spans[0].started_at, started + 0.125)
+        self.assertAlmostEqual(spans[0].duration, 1.875)
+
+    def test_effort_and_tier_are_captured_per_output_and_not_guessed(self):
+        records = self._generation_records()
+        records[0]["payload"]["effort"] = "medium"
+        settings = {"type": "event_msg", "timestamp": "2026-10-03T10:00:01Z", "payload": {
+            "type": "thread_settings_applied", "thread_settings": {
+                "reasoning_effort": "medium", "service_tier": "priority"}}}
+        records.insert(1, settings)
+        # Settings for a later request must not relabel output already in progress.
+        records.insert(-1, {**settings, "timestamp": "2026-10-03T10:00:04Z", "payload": {
+            "type": "thread_settings_applied", "thread_settings": {
+                "reasoning_effort": "high", "service_tier": "default"}}})
+        self._write_session(records)
+        span = CodexAdapter(self.root).collect()[0]
+        self.assertEqual(span.reasoning_effort, "medium")
+        self.assertEqual(span.service_tier, "priority")
+        self.assertEqual(span.speed_mode, "fast")
+        timeline = CodexAdapter(self.root).collect_sessions()[0]
+        self.assertEqual(timeline.reasoning_effort, "high")
+        self.assertEqual(timeline.speed_mode, "standard")
+        for event in timeline.events:
+            if event.kind in {"assistant_message", "reasoning"}:
+                self.assertEqual(event.reasoning_effort, "medium")
+                self.assertEqual(event.speed_mode, "fast")
+        self._write_session(self._generation_records())
+        unknown = CodexAdapter(self.root).collect()[0]
+        self.assertIsNone(unknown.reasoning_effort)
+        self.assertIsNone(unknown.speed_mode)
 
     def test_session_cutoff_uses_event_time_and_keeps_boundary(self):
         self._write_session(self._generation_records(), "older")

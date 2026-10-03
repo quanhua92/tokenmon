@@ -54,6 +54,20 @@ to normal operation or tests.
   `cwd` is optional recorded metadata; unknown is `None`, never the monitor's cwd.
 - Timeline events carry an optional internal `event_id` for live deduplication;
   keep it stable across usage/timestamp updates and out of the public JSON shape.
+- Generation spans, sessions, and timeline events expose optional `reasoning_effort`, `service_tier`, and `speed`
+  from recorded metadata. Missing values stay `None`/JSON `null`; never infer them
+  from model names, TPS, or the monitor's current configuration. Recent human rows
+  show effort and speed, mapping recorded priority/fast tiers to `fast` and
+  default/standard tiers to `standard`. Settings describe recorded request mode.
+  All JSON stream/session/event objects include all three raw fields and normalized
+  `speed_mode`, with missing values as `null`. Session fields describe latest
+  recorded settings; event fields preserve historical settings. Stats summary/model
+  windows include distinct valid-stream `configurations`; singular fields are set
+  only when every configuration agrees. Human session/timeline views also show
+  available effort and speed.
+- Human stats total time uses the shared hours/minutes/seconds formatter; JSON
+  durations remain numeric seconds. Explain that overlapping spans sum separately
+  and Claude single-record `turn-span` is a latency-inclusive estimate.
 
 ## Adapter specifics
 
@@ -70,17 +84,27 @@ session continues to be readable outside the recent-session discovery limit.
   `model`; fall back to recursive `sessions/**/*.jsonl`. Span starts prefer diagnostic
   stream logs, then `item_completed` timing. Correlate item IDs, turn context and
   usage; deduplicate response IDs. Tool-first/placeholder starts are excluded.
+  Support diagnostic `timestamp`/`message` and native `ts` + `ts_nanos` /
+  `feedback_log_body` schemas. Track cumulative `total_token_usage` snapshots even
+  before cutoffs or without pending output, and ignore repeats without clearing
+  newer pending items or assigning old tokens to newer timeline events. Effort
+  comes from turn context/settings; tier comes from settings or response usage.
   `cwd` comes from the first usable `session_meta`/`turn_context` payload.
 - **Claude:** `CLAUDE_HOME` or `~/.claude`; parse `projects/*/*.jsonl`. Group assistant
   chunks by message ID; use final output usage. Multiple chunks use first/last chunk
   timestamps; single records fall back to the preceding user/prompt/tool result.
   Deduplicate assistant messages without losing final usage or repeating tools.
+  Preserve earlier prompts and chunks before filtering by completion time. Read
+  explicit effort/configuration and final usage tier/speed metadata when present.
   The first nonempty record `cwd` wins, even without a timestamp.
 - **Antigravity / agy:** `ANTIGRAVITY_HOME` or `~/.gemini/antigravity-cli`.
   Discover `conversations/*.db`, preferring `conversation_summaries.db` ordering.
   Minimal protobuf-wire decoding stays dependency-free. Steps 14/15/132 are
   user/assistant/tool; metadata fields 1 and 7 (fallback 8) provide timing, field 9
   contains usage (field 3 output tokens). `gen_metadata` supplies model mappings.
+  Carry model and explicit effort/tier/speed mappings from their boundary through
+  subsequent steps until the next boundary. Preserve decoded invalid spans for
+  exclusion counts; skip malformed wire records without losing later valid steps.
   `workspace_uris` supplies the first usable URL-decoded `file://` workspace path.
 
 Treat logs as evolving input: skip bad/unknown records and tolerate missing optional
@@ -172,3 +196,8 @@ Keep coverage for these previously reproduced defects:
 - Watch includes recent streams and session cards, including sessions with no
   generation spans. Follow emits nothing historical, handles equal timestamps and
   streamed metadata updates, and remains pinned when recent-session ordering changes.
+- Codex repeated usage snapshots must not create false high-TPS reasoning spans;
+  fresh cumulative counts with identical per-response token counts still count.
+  Codex/Claude window cutoffs preserve preceding metadata and generation starts.
+  Antigravity settings carry across step ranges, bad/zero-duration spans remain
+  excluded, and malformed records do not discard later valid steps.

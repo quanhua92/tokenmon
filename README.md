@@ -37,7 +37,7 @@ Expand a screenshot below. Click the image to view it at full size.
 
 ## Features
 
-- **Real Output Speed**: Measures actual streaming speed (TPS), ignoring tool execution and network idle pauses.
+- **Generation Speed**: Measures TPS from recorded output boundaries and labels timing fallbacks, including Claude prompt-to-response estimates.
 - **Zero Extra Dependencies**: Runs on standard Python 3.10+ without installing third-party packages.
 - **Strictly Read-Only**: Safely opens local files and SQLite databases in read-only mode (`?mode=ro`). Never locks or changes your logs.
 - **Meaningful Averages**: Calculates true weighted speed ($\frac{\text{total tokens}}{\text{total time}}$), median speed, and min/max ranges over rolling time windows (`30m`, `1d`, `7d`, `30d`, `all`).
@@ -127,6 +127,57 @@ appends complete snapshots. Agent selection, `--home`, `--tasks`, `--recent`,
 `--window` option across commands; replace the former `-w 1d` syntax with
 `--window 1d` in existing commands and scripts. Combine them as
 `tokenmon stats -w --window 1d`.
+
+The wide stats table formats total generation time as hours, minutes, and seconds
+(for example, `13h 53m 46s`). This sums durations across streams and sessions, so
+overlapping sessions can produce a total longer than the window's wall-clock time.
+JSON retains numeric duration values in seconds.
+
+Recent streams, session lists/cards, and timelines show explicit reasoning effort
+and speed metadata when available:
+
+```text
+gpt-6.1-sol medium fast : 45.9 TPS (937 tokens in 20.43s) [stream-log]
+```
+
+Codex reads effort from turn context and settings, and tier from recorded thread
+settings or response usage. Recorded `priority`/`fast` tiers display as `fast`,
+following the [OpenAI fast-mode tier names](https://developers.openai.com/api/docs/guides/fast-mode).
+Settings describe the recorded request mode; they do not independently confirm the
+server's delivered tier. Claude reads explicit effort/configuration and usage
+tier/speed fields. Antigravity reads explicit named settings in generation
+metadata when present; current logs may not record them. Missing metadata is
+omitted in human output and becomes `null` in JSON's `reasoning_effort`,
+`service_tier`, `speed`, and normalized `speed_mode` fields. Model names and measured TPS never determine
+effort or fast mode.
+
+Range is the minimum and maximum individual valid stream TPS, rather than an
+interval around the weighted average. A rate above 200 TPS can be valid when its
+tokens and timing agree. Streams shorter than one second, above 400 TPS, or with
+unconfirmed boundaries are excluded. Codex repeated cumulative usage snapshots
+are ignored so old tokens cannot inflate a later reasoning item's rate. Claude's
+single-record `turn-span` fallback includes prompt-to-response latency and should
+be treated as an estimate, not pure streaming speed.
+
+All JSON views include the same optional fields: stats `recent_streams` and
+`recent_sessions`, `ps` entries, timeline session objects, and individual events
+(including window exports). Session fields describe the latest recorded settings;
+events preserve their own settings. Each stats summary and model window includes
+`configurations`, the distinct settings of valid streams in that window. Its
+singular metadata fields are populated only when all configurations agree on that
+field; mixed or missing values are `null`.
+
+For example:
+
+```json
+{
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "medium",
+  "service_tier": "priority",
+  "speed": null,
+  "speed_mode": "fast"
+}
+```
 
 ### Active & Recent Sessions (`sessions`, `ps`, `ls`)
 

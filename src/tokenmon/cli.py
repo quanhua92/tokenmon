@@ -14,9 +14,38 @@ from datetime import datetime, timezone
 from tokenmon import __version__
 from tokenmon.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
 from tokenmon.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
-from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, WindowSummary
+from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, WindowSummary, recorded_speed_mode
 
 logger = logging.getLogger(__name__)
+
+
+def metadata_to_dict(value: GenerationSpan | SessionTimeline | TimelineEvent) -> dict:
+    return {"reasoning_effort": value.reasoning_effort, "service_tier": value.service_tier,
+            "speed": value.speed, "speed_mode": value.speed_mode}
+
+
+def configuration_label(value: GenerationSpan | SessionTimeline | TimelineEvent) -> str:
+    return " ".join(part for part in (value.reasoning_effort, value.speed_mode) if part)
+
+
+def model_label(value: GenerationSpan | SessionTimeline, compact: bool = False) -> str:
+    model = value.model[:12] if compact else value.model
+    details = configuration_label(value)
+    return model + (f" {details}" if details else "")
+
+
+def configuration_metadata(spans: list[GenerationSpan]) -> dict:
+    settings = {(s.reasoning_effort, s.service_tier, s.speed) for s in spans if s.tps is not None}
+    configurations = [
+        {"reasoning_effort": effort, "service_tier": tier, "speed": speed,
+         "speed_mode": recorded_speed_mode(speed, tier)}
+        for effort, tier, speed in sorted(settings, key=lambda values: tuple(v or "" for v in values))
+    ]
+    common = {}
+    for key in ("reasoning_effort", "service_tier", "speed", "speed_mode"):
+        values = {config[key] for config in configurations}
+        common[key] = next(iter(values)) if len(values) == 1 else None
+    return {**common, "configurations": configurations}
 
 
 def format_table(summaries: list[WindowSummary], compact: bool | None = None) -> str:
@@ -44,7 +73,7 @@ def format_table(summaries: list[WindowSummary], compact: bool | None = None) ->
             "Window",
             "Outputs",
             "Tokens",
-            "Time (s)",
+            "Time",
             "TPS (wtd)",
             "Median",
             "Range",
@@ -59,7 +88,7 @@ def format_table(summaries: list[WindowSummary], compact: bool | None = None) ->
                     s.window_name,
                     f"{s.valid_spans}/{s.total_spans}",
                     f"{s.total_tokens:,}",
-                    f"{s.total_duration:.1f}",
+                    format_session_duration(s.total_duration),
                     w_tps,
                     med_tps,
                     range_tps,
@@ -91,7 +120,7 @@ def format_session_duration(seconds: float) -> str:
     mins, secs = divmod(int(seconds), 60)
     if mins >= 60:
         hours, mins = divmod(mins, 60)
-        return f"{hours}h {mins:02d}m"
+        return f"{hours}h {mins:02d}m {secs:02d}s"
     return f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
 
@@ -112,7 +141,7 @@ def format_sessions_table(
             rows.append(
                 [
                     t.session_id[:10],
-                    t.model[:12],
+                    model_label(t, compact=True),
                     str(t.assistant_messages),
                     f"{t.total_tokens:,}",
                     dur_str,
@@ -136,7 +165,7 @@ def format_sessions_table(
             rows.append(
                 [
                     t.session_id[:16],
-                    t.model,
+                    model_label(t),
                     str(t.user_messages),
                     str(t.assistant_messages),
                     str(t.tool_calls),
@@ -174,10 +203,12 @@ def format_recent_span(s: GenerationSpan, compact: bool | None = None) -> str:
 
     dt = datetime.fromtimestamp(s.ended_at, tz=timezone.utc).astimezone()
     tps_val = s.tps or 0.0
+    details = " ".join(value for value in (s.reasoning_effort, s.speed_mode) if value)
+    model_label = s.model + (f" {details}" if details else "")
 
     if compact:
         t_str = dt.strftime("%H:%M:%S")
-        m_str = s.model[:12]
+        m_str = s.model[:12] + (f" {details}" if details else "")
         return (
             f"  {t_str}  {m_str:<12}  "
             f"\033[1;32m{tps_val:5.1f} TPS\033[0m  "
@@ -186,7 +217,7 @@ def format_recent_span(s: GenerationSpan, compact: bool | None = None) -> str:
     else:
         t_str = dt.strftime("%Y-%m-%d %H:%M:%S")
         return (
-            f"  [{t_str}] {s.model:<18} : "
+            f"  [{t_str}] {model_label:<18} : "
             f"\033[1;32m{tps_val:6.1f} TPS\033[0m  "
             f"({s.tokens:5d} tokens in {s.duration:5.2f}s) "
             f"[{s.timing_source}]"
@@ -226,7 +257,7 @@ def format_session_card(t: SessionTimeline, now: float) -> str:
     time_part = f"⏱️ Elapsed:   {dur_str}"
 
     lines = [
-        f"  📌 \033[1m{t.session_id[:12]}\033[0m  ({t.model})  {status_badge}",
+        f"  📌 \033[1m{t.session_id[:12]}\033[0m  ({model_label(t)})  {status_badge}",
         f"     {user_part}",
         f"     {agent_part}",
         f"     {time_part}",
@@ -236,7 +267,7 @@ def format_session_card(t: SessionTimeline, now: float) -> str:
 
 def format_timeline_view(timeline: SessionTimeline, now: float) -> str:
     lines = [
-        f"🔍 Session Timeline: \033[1m{timeline.session_id}\033[0m ({timeline.model})",
+        f"🔍 Session Timeline: \033[1m{timeline.session_id}\033[0m ({model_label(timeline)})",
         f"Activity: {timeline.user_messages} User Prompts | {timeline.assistant_messages} Assistant Responses | {timeline.tool_calls} Tool Calls | {timeline.total_tokens:,} Tokens",
         f"Status: \033[1m{timeline.status(now)}\033[0m\n",
     ]
@@ -261,7 +292,9 @@ def format_timeline_event(ev: TimelineEvent) -> str:
     t_str = dt.strftime("%H:%M:%S")
     tag = event_icons.get(ev.kind, f"•  {ev.kind:<9}")
     dur_str = f" [{ev.duration:.2f}s]" if ev.duration is not None else ""
-    return f"  {t_str} │ {tag} │ {ev.summary}{dur_str}"
+    details = configuration_label(ev) if ev.kind in {"assistant_message", "reasoning", "tool_call"} else ""
+    settings = f" [{details}]" if details else ""
+    return f"  {t_str} │ {tag} │ {ev.summary}{dur_str}{settings}"
 
 
 ASCII_LOGO = r"""
@@ -276,7 +309,7 @@ ASCII_LOGO = r"""
 
 STATS_GUIDE = """\
 📖 How to read this
-  • TPS is output tokens per second of pure generation. Tool runs and waiting are not counted.
+  • TPS uses recorded generation boundaries. Claude single-record turn-span estimates can include latency or waiting.
   • TPS in the table is total tokens ÷ total seconds, not an average of per-stream speeds.
   • Outputs "valid/total": streams under 1s or with unclear timing count in total but not in TPS.
   • Median is the middle stream. It is less affected by one very slow or very fast stream.
@@ -683,6 +716,7 @@ def main() -> int:
                 "agent": t.agent,
                 "cwd": t.cwd,
                 "model": t.model,
+                **metadata_to_dict(t),
                 "created_at": t.created_at,
                 "updated_at": t.updated_at,
                 "user_messages": t.user_messages,
@@ -700,6 +734,7 @@ def main() -> int:
                         "summary": ev.summary,
                         "tokens": ev.tokens,
                         "duration": ev.duration,
+                        **metadata_to_dict(ev),
                     }
                     for ev in t.events
                 ],
@@ -765,6 +800,7 @@ def main() -> int:
                     "agent": t.agent,
                     "cwd": t.cwd,
                     "model": t.model,
+                    **metadata_to_dict(t),
                     "created_at": t.created_at,
                     "updated_at": t.updated_at,
                     "user_messages": t.user_messages,
@@ -799,6 +835,7 @@ def main() -> int:
         # 1. Models throughput breakdown
         models_json = {}
         for model, summaries in analysis.items():
+            model_spans = [s for s in all_spans if s.model == model]
             models_json[model] = {
                 st.window_name: {
                     "total_spans": st.total_spans,
@@ -810,6 +847,7 @@ def main() -> int:
                     "median_tps": round(st.median_tps, 2) if st.median_tps is not None else None,
                     "min_tps": round(st.min_tps, 2) if st.min_tps is not None else None,
                     "max_tps": round(st.max_tps, 2) if st.max_tps is not None else None,
+                    **configuration_metadata(filter_by_window(model_spans, WINDOW_DURATIONS[st.window_name], now)),
                 }
                 for st in summaries
             }
@@ -830,6 +868,7 @@ def main() -> int:
                 "median_tps": round(st.median_tps, 2) if st.median_tps is not None else None,
                 "min_tps": round(st.min_tps, 2) if st.min_tps is not None else None,
                 "max_tps": round(st.max_tps, 2) if st.max_tps is not None else None,
+                **configuration_metadata(win_spans),
             }
 
         # 2. Recent generation streams
@@ -845,6 +884,7 @@ def main() -> int:
                 "duration": round(s.duration, 3),
                 "tps": round(s.tps, 2) if s.tps is not None else None,
                 "timing_source": s.timing_source,
+                **metadata_to_dict(s),
             }
             for s in valid_spans[-recent_count:]
         ] if recent_count > 0 else []
@@ -857,6 +897,7 @@ def main() -> int:
                 "agent": t.agent,
                 "cwd": t.cwd,
                 "model": t.model,
+                **metadata_to_dict(t),
                 "status": t.status(now),
                 "user_messages": t.user_messages,
                 "assistant_messages": t.assistant_messages,

@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from tokenmon.adapters.base import BaseAdapter
-from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
+from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span, generation_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,25 @@ class _ItemTiming:
     turn_id: str
     start: float
     end: float
+
+
+class _UsageSnapshots:
+    """Repeated cumulative token_count snapshots do not describe new output."""
+
+    def __init__(self):
+        self.last_total: dict | None = None
+
+    def is_new(self, info: object) -> bool:
+        if not isinstance(info, dict) or not isinstance(info.get("last_token_usage"), dict):
+            return False
+        total = info.get("total_token_usage")
+        if not isinstance(total, dict) or not total:
+            # Older formats have no cumulative counter to establish duplication.
+            return True
+        if total == self.last_total:
+            return False
+        self.last_total = total.copy()
+        return True
 
 
 _ITEM_START_RE = re.compile(
@@ -116,23 +135,30 @@ class CodexAdapter(BaseAdapter):
 
         try:
             with closing(open_ro_db(logs_db)) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(logs)")}
+                if {"timestamp", "message"} <= columns:
+                    timestamp_column, message_column = "timestamp", "message"
+                elif {"ts", "feedback_log_body"} <= columns:
+                    timestamp_column = "ts + ts_nanos / 1000000000.0" if "ts_nanos" in columns else "ts"
+                    message_column = "feedback_log_body"
+                else:
+                    return starts
                 rows = conn.execute(
-                    "SELECT timestamp, message FROM logs "
-                    "WHERE target = 'codex_core::stream_events_utils' "
+                    f"SELECT {timestamp_column}, {message_column} FROM logs "
+                    "WHERE target = ? "
                     "ORDER BY id DESC LIMIT ?",
-                    (max_entries,),
+                    ("codex_core::stream_events_utils", max_entries),
                 ).fetchall()
         except Exception:
             return starts
 
         for ts_str, body in reversed(rows):
-            if not body or "handle_output_item_done" in body:
+            if not isinstance(body, str) or not body or "handle_output_item_done" in body:
                 continue
-            at = parse_timestamp(ts_str)
-            if at is None:
+            at = float(ts_str) if isinstance(ts_str, (int, float)) else parse_timestamp(ts_str)
+            if at is None or not math.isfinite(at):
                 continue
-            if min_timestamp is not None and at < min_timestamp:
-                continue
+            # Starts before the completion cutoff remain needed by overlapping spans.
 
             _, _, tail = body.rpartition(": ")
             tail = tail or body
@@ -203,6 +229,9 @@ class CodexAdapter(BaseAdapter):
         first_output_kind: str | None = None
         timings: dict[str, _ItemTiming] = {}
         seen_responses: set[str] = set()
+        usage_snapshots = _UsageSnapshots()
+        reasoning_effort = service_tier = speed = None
+        output_settings = (None, None, None)
 
         try:
             with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
@@ -221,8 +250,6 @@ class CodexAdapter(BaseAdapter):
                     at = parse_timestamp(record.get("timestamp"))
                     if not isinstance(val, dict) or at is None:
                         continue
-                    if min_timestamp is not None and at < min_timestamp:
-                        continue
 
                     kind = record.get("type")
                     event = val.get("type")
@@ -236,9 +263,26 @@ class CodexAdapter(BaseAdapter):
                         m = val.get("model")
                         if isinstance(m, str) and m:
                             model = m
+                        effort, tier, mode = generation_metadata(val)
+                        if "effort" in val or "reasoning_effort" in val or effort is not None:
+                            reasoning_effort = effort
+                        if "service_tier" in val:
+                            service_tier = tier
+                        if "speed" in val:
+                            speed = mode
 
                     elif kind == "event_msg":
-                        if event == "item_completed":
+                        if event == "thread_settings_applied":
+                            settings = val.get("thread_settings")
+                            if isinstance(settings, dict):
+                                effort, tier, mode = generation_metadata(settings)
+                                if "reasoning_effort" in settings or "effort" in settings or effort is not None:
+                                    reasoning_effort = effort
+                                if "service_tier" in settings:
+                                    service_tier = tier
+                                if "speed" in settings:
+                                    speed = mode
+                        elif event == "item_completed":
                             item = val.get("item")
                             if isinstance(item, dict) and isinstance(item.get("type"), str) and item.get("type") in {
                                 "Reasoning",
@@ -264,7 +308,7 @@ class CodexAdapter(BaseAdapter):
                             timings.clear()
                         elif event == "token_count":
                             info = val.get("info")
-                            if isinstance(info, dict):
+                            if usage_snapshots.is_new(info):
                                 usage = info.get("last_token_usage")
                                 if isinstance(usage, dict) and items:
                                     self._append_span(
@@ -280,6 +324,7 @@ class CodexAdapter(BaseAdapter):
                                         timings,
                                         diag_starts,
                                         seen_responses,
+                                        *output_settings,
                                     )
                                     items.clear()
                                     first_output_kind = None
@@ -291,6 +336,7 @@ class CodexAdapter(BaseAdapter):
                         if is_out:
                             if not items:
                                 first_output_kind = event
+                                output_settings = (reasoning_effort, service_tier, speed)
                             item_id = val.get("id")
                             if isinstance(item_id, str) and item_id:
                                 items.setdefault(item_id, at)
@@ -309,13 +355,15 @@ class CodexAdapter(BaseAdapter):
                             timings,
                             diag_starts,
                             seen_responses,
+                            *output_settings,
                         )
                         items.clear()
                         first_output_kind = None
         except Exception:
             pass
 
-        return spans
+        # Parse earlier context and usage snapshots before filtering completions.
+        return [s for s in spans if min_timestamp is None or s.ended_at >= min_timestamp]
 
     def _append_span(
         self,
@@ -331,6 +379,9 @@ class CodexAdapter(BaseAdapter):
         timings: dict[str, _ItemTiming],
         diag_starts: dict[str, float],
         seen_responses: set[str],
+        reasoning_effort: str | None = None,
+        service_tier: str | None = None,
+        speed: str | None = None,
     ) -> None:
         if not items:
             return
@@ -341,6 +392,7 @@ class CodexAdapter(BaseAdapter):
         seen_responses.add(resp_id)
 
         tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
+        _, usage_tier, usage_speed = generation_metadata(usage)
         item_list = list(items.items())
         first_id, _ = item_list[0]
 
@@ -389,6 +441,9 @@ class CodexAdapter(BaseAdapter):
                 ended_at=end_at,
                 timing_source=timing_source,
                 note=note,
+                reasoning_effort=reasoning_effort,
+                service_tier=usage_tier or service_tier,
+                speed=usage_speed or speed,
             )
         )
 
@@ -427,6 +482,8 @@ class CodexAdapter(BaseAdapter):
         model = default_model
         turn_id = ""
         cwd: str | None = None
+        usage_snapshots = _UsageSnapshots()
+        reasoning_effort = service_tier = speed = None
 
         try:
             with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
@@ -464,9 +521,26 @@ class CodexAdapter(BaseAdapter):
                         m = val.get("model")
                         if isinstance(m, str) and m:
                             model = m
+                        effort, tier, mode = generation_metadata(val)
+                        if "effort" in val or "reasoning_effort" in val or effort is not None:
+                            reasoning_effort = effort
+                        if "service_tier" in val:
+                            service_tier = tier
+                        if "speed" in val:
+                            speed = mode
 
                     elif kind == "event_msg":
-                        if event == "task_started":
+                        if event == "thread_settings_applied":
+                            settings = val.get("thread_settings")
+                            if isinstance(settings, dict):
+                                effort, tier, mode = generation_metadata(settings)
+                                if "reasoning_effort" in settings or "effort" in settings or effort is not None:
+                                    reasoning_effort = effort
+                                if "service_tier" in settings:
+                                    service_tier = tier
+                                if "speed" in settings:
+                                    speed = mode
+                        elif event == "task_started":
                             turn_id = str(val.get("turn_id", ""))
                             events.append(
                                 TimelineEvent(
@@ -550,6 +624,8 @@ class CodexAdapter(BaseAdapter):
                         info = val.get("usage")
                         if kind == "event_msg":
                             count_info = val.get("info")
+                            if not usage_snapshots.is_new(count_info):
+                                continue
                             info = count_info.get("last_token_usage") if isinstance(count_info, dict) else None
                         tokens = info.get("output_tokens") if isinstance(info, dict) else None
                         if isinstance(tokens, int) and tokens >= 0 and events:
@@ -561,18 +637,18 @@ class CodexAdapter(BaseAdapter):
                                     # The two usage formats may describe the same output.
                                     # Update its latest event instead of backfilling earlier reasoning.
                                     summary = ev.summary.removesuffix(f" ({ev.tokens} tokens)")
-                                    events[idx] = TimelineEvent(
-                                        timestamp=ev.timestamp,
-                                        kind=ev.kind,
-                                        turn_id=ev.turn_id,
+                                    _, usage_tier, usage_speed = generation_metadata(info)
+                                    events[idx] = replace(
+                                        ev,
                                         summary=f"{summary} ({tokens} tokens)",
                                         tokens=tokens,
-                                        duration=ev.duration,
-                                        event_id=ev.event_id,
+                                        service_tier=usage_tier or ev.service_tier,
+                                        speed=usage_speed or ev.speed,
                                     )
                                     break
                     for idx in range(first_new_event, len(events)):
-                        events[idx] = replace(events[idx], event_id=f"record:{record_number}:{events[idx].kind}")
+                        events[idx] = replace(events[idx], event_id=f"record:{record_number}:{events[idx].kind}",
+                                              reasoning_effort=reasoning_effort, service_tier=service_tier, speed=speed)
         except Exception:
             pass
 
@@ -588,4 +664,7 @@ class CodexAdapter(BaseAdapter):
             updated_at=updated_at,
             events=events,
             cwd=cwd,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
+            speed=speed,
         )

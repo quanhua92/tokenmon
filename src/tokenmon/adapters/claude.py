@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from tokenmon.adapters.base import BaseAdapter
-from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
+from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span, generation_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -118,9 +118,6 @@ class ClaudeAdapter(BaseAdapter):
                     if at is None or not isinstance(rec_type, str):
                         continue
 
-                    if min_timestamp is not None and at < min_timestamp:
-                        continue
-
                     if rec_type in {"user", "last-prompt", "tool_result"}:
                         prev_event_time = at
 
@@ -155,6 +152,11 @@ class ClaudeAdapter(BaseAdapter):
                 model = "claude"
             usage = msg.get("usage", {})
             tokens = usage.get("output_tokens") or 0
+            metadata_sources = []
+            for _, chunk in reversed(chunks):
+                chunk_msg = chunk.get("message", {})
+                metadata_sources.extend((chunk_msg.get("usage"), chunk_msg, chunk))
+            effort, tier, speed = generation_metadata(*metadata_sources)
 
             if len(chunks) > 1:
                 started_at = first_at
@@ -179,6 +181,9 @@ class ClaudeAdapter(BaseAdapter):
                     started_at=started_at,
                     ended_at=ended_at,
                     timing_source=timing_source,
+                    reasoning_effort=effort,
+                    service_tier=tier,
+                    speed=speed,
                 )
             )
 
@@ -210,12 +215,16 @@ class ClaudeAdapter(BaseAdapter):
         events: list[TimelineEvent] = []
         model = "claude"
         assistant_event_indexes: dict[str, int] = {}
+        message_event_indexes: dict[str, list[int]] = {}
+        message_settings: dict[str, tuple[str | None, str | None, str | None]] = {}
         seen_content_blocks: set[tuple[str, str, str | int]] = set()
         cwd: str | None = None
+        reasoning_effort = service_tier = speed = None
 
         try:
             with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
                 for record_number, line in enumerate(f):
+                    first_new_event = len(events)
                     line = line.strip()
                     if not line:
                         continue
@@ -242,6 +251,13 @@ class ClaudeAdapter(BaseAdapter):
                     record_id = rec.get("uuid")
                     if not isinstance(record_id, str) or not record_id:
                         record_id = f"record:{record_number}"
+                    effort, tier, mode = generation_metadata(rec)
+                    if effort is not None:
+                        reasoning_effort = effort
+                    if tier is not None:
+                        service_tier = tier
+                    if mode is not None:
+                        speed = mode
 
                     if rec_type == "user":
                         msg = rec.get("message", {})
@@ -291,6 +307,10 @@ class ClaudeAdapter(BaseAdapter):
                             model = cur_model
 
                         usage = msg.get("usage", {})
+                        previous = message_settings.get(msg_id, (None, None, None))
+                        reasoning_effort, service_tier, speed = generation_metadata(usage, msg, rec, {
+                            "reasoning_effort": previous[0], "service_tier": previous[1], "speed": previous[2]})
+                        message_settings[msg_id] = (reasoning_effort, service_tier, speed)
                         out_tokens = usage.get("output_tokens") or 0
                         if not isinstance(out_tokens, int) or out_tokens < 0:
                             out_tokens = 0
@@ -338,6 +358,9 @@ class ClaudeAdapter(BaseAdapter):
                             summary=f"Assistant response ({out_tokens} tokens)",
                             tokens=out_tokens,
                             event_id=f"message:{msg_id}:assistant",
+                            reasoning_effort=reasoning_effort,
+                            service_tier=service_tier,
+                            speed=speed,
                         )
                         if msg_id in assistant_event_indexes:
                             index = assistant_event_indexes[msg_id]
@@ -347,6 +370,11 @@ class ClaudeAdapter(BaseAdapter):
                         else:
                             assistant_event_indexes[msg_id] = len(events)
                             events.append(assistant_event)
+                        indexes = message_event_indexes.setdefault(msg_id, [])
+                        indexes.extend(range(first_new_event, len(events)))
+                        for index in indexes:
+                            events[index] = replace(events[index], reasoning_effort=reasoning_effort,
+                                                    service_tier=service_tier, speed=speed)
 
                     elif rec_type == "tool_result":
                         tname = rec.get("name") or "tool"
@@ -373,6 +401,9 @@ class ClaudeAdapter(BaseAdapter):
                                 event_id=f"{record_id}:turn_end",
                             )
                         )
+                    for index in range(first_new_event, len(events)):
+                        events[index] = replace(events[index], reasoning_effort=reasoning_effort,
+                                                service_tier=service_tier, speed=speed)
         except Exception:
             pass
 
@@ -388,4 +419,7 @@ class ClaudeAdapter(BaseAdapter):
             updated_at=updated_at,
             events=events,
             cwd=cwd,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
+            speed=speed,
         )

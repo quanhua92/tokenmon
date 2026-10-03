@@ -8,13 +8,15 @@ import math
 import os
 import re
 import sqlite3
+from bisect import bisect_right
 from contextlib import closing
 from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from tokenmon.adapters.base import BaseAdapter
-from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
+from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span, generation_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,8 @@ def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
 
 
 def parse_proto_fields(data: bytes) -> list[tuple[int, str, int | bytes | None]]:
+    if not isinstance(data, bytes):
+        return []
     offset = 0
     fields: list[tuple[int, str, int | bytes | None]] = []
     limit = len(data)
@@ -49,14 +53,20 @@ def parse_proto_fields(data: bytes) -> list[tuple[int, str, int | bytes | None]]
                 fields.append((field_num, "varint", val))
             elif wire_type == 2:  # length-delimited
                 length, offset = decode_varint(data, offset)
+                if offset + length > limit:
+                    break
                 val = data[offset : offset + length]
                 offset += length
                 fields.append((field_num, "bytes", val))
             elif wire_type == 1:  # 64-bit
+                if offset + 8 > limit:
+                    break
                 val = data[offset : offset + 8]
                 offset += 8
                 fields.append((field_num, "fixed64", val))
             elif wire_type == 5:  # 32-bit
+                if offset + 4 > limit:
+                    break
                 val = data[offset : offset + 4]
                 offset += 4
                 fields.append((field_num, "fixed32", val))
@@ -186,6 +196,48 @@ class AntigravityAdapter(BaseAdapter):
 
         return latest_ts
 
+    def _generation_settings(self, conn):
+        """Read the same recorded model/configuration boundaries for spans and timelines."""
+        cur = conn.cursor()
+        default_model = "gemini"
+        step_model_map: dict[int, str] = {}
+        step_settings_map: dict[int, tuple[str | None, str | None, str | None]] = {}
+        default_settings = (None, None, None)
+        try:
+            cur.execute("SELECT data FROM gen_metadata WHERE data IS NOT NULL;")
+            for (data,) in cur.fetchall():
+                for fn, wt, val in parse_proto_fields(data):
+                    if fn == 1 and isinstance(val, bytes):
+                        m_name: str | None = None
+                        last_idx: int | None = None
+                        metadata_settings = {}
+                        for sfn, swt, sval in parse_proto_fields(val):
+                            if sfn == 19 and isinstance(sval, bytes):
+                                m_name = sval.decode("utf-8", errors="ignore").strip()
+                            elif sfn == 20 and isinstance(sval, bytes):
+                                try:
+                                    k_v = parse_proto_fields(sval)
+                                    d = {k[0]: k[2] for k in k_v}
+                                    k_b = d.get(1)
+                                    v_b = d.get(2)
+                                    if isinstance(k_b, bytes) and isinstance(v_b, bytes):
+                                        key = k_b.decode("utf-8", errors="ignore")
+                                        if key in {"reasoning_effort", "effort", "thinking_level", "service_tier", "speed"}:
+                                            metadata_settings[key] = v_b.decode("utf-8", errors="ignore")
+                                    if k_b == b"last_step_index" and isinstance(v_b, bytes):
+                                        last_idx = int(v_b.decode("utf-8", errors="ignore"))
+                                except Exception:
+                                    pass
+                        if m_name:
+                            default_model = m_name
+                            default_settings = generation_metadata(metadata_settings)
+                            if last_idx is not None:
+                                step_model_map[last_idx + 1] = m_name
+                                step_settings_map[last_idx + 1] = default_settings
+        except Exception:
+            pass
+        return default_model, default_settings, step_model_map, step_settings_map
+
     def collect(self, max_sessions: int = 64, min_timestamp: float | None = None) -> list[GenerationSpan]:
         dbs = self._discover_session_dbs(max_sessions, min_timestamp=min_timestamp)
         spans: list[GenerationSpan] = []
@@ -197,34 +249,9 @@ class AntigravityAdapter(BaseAdapter):
                     cur = conn.cursor()
 
                     # 1. Parse model from gen_metadata
-                    default_model = "gemini"
-                    step_model_map: dict[int, str] = {}
-                    try:
-                        cur.execute("SELECT data FROM gen_metadata WHERE data IS NOT NULL;")
-                        for (data,) in cur.fetchall():
-                            for fn, wt, val in parse_proto_fields(data):
-                                if fn == 1 and isinstance(val, bytes):
-                                    m_name: str | None = None
-                                    last_idx: int | None = None
-                                    for sfn, swt, sval in parse_proto_fields(val):
-                                        if sfn == 19 and isinstance(sval, bytes):
-                                            m_name = sval.decode("utf-8", errors="ignore").strip()
-                                        elif sfn == 20 and isinstance(sval, bytes):
-                                            try:
-                                                k_v = parse_proto_fields(sval)
-                                                d = {k[0]: k[2] for k in k_v}
-                                                k_b = d.get(1)
-                                                v_b = d.get(2)
-                                                if k_b == b"last_step_index" and isinstance(v_b, bytes):
-                                                    last_idx = int(v_b.decode("utf-8", errors="ignore"))
-                                            except Exception:
-                                                pass
-                                    if m_name:
-                                        default_model = m_name
-                                        if last_idx is not None:
-                                            step_model_map[last_idx + 1] = m_name
-                    except Exception:
-                        pass
+                    default_model, default_settings, step_model_map, step_settings_map = self._generation_settings(conn)
+
+                    model_boundaries = sorted(step_model_map)
 
                     # 2. Extract step_type 15 (model outputs)
                     cur.execute(
@@ -234,17 +261,18 @@ class AntigravityAdapter(BaseAdapter):
                     for idx, meta in cur.fetchall():
                         fields = {f[0]: f[2] for f in parse_proto_fields(meta)}
                         f1 = fields.get(1)
-                        f7 = fields.get(7) or fields.get(8)
+                        f7 = fields.get(7)
+                        f8 = fields.get(8)
                         f9 = fields.get(9)
 
-                        if not isinstance(f1, bytes) or not isinstance(f7, bytes) or not isinstance(f9, bytes):
+                        if not isinstance(f1, bytes) or not isinstance(f9, bytes):
                             continue
 
                         t_start = parse_proto_timestamp(f1)
-                        t_end = parse_proto_timestamp(f7)
-                        if t_start is None or t_end is None or t_end <= t_start:
-                            continue
-                        if min_timestamp is not None and t_end < min_timestamp:
+                        t_end = parse_proto_timestamp(f7) if isinstance(f7, bytes) else None
+                        if t_end is None and isinstance(f8, bytes):
+                            t_end = parse_proto_timestamp(f8)
+                        if min_timestamp is not None and t_end is not None and t_end < min_timestamp:
                             continue
 
                         u_dict = {
@@ -253,10 +281,9 @@ class AntigravityAdapter(BaseAdapter):
                             if f[1] == "varint" and isinstance(f[2], int)
                         }
                         out_tokens = u_dict.get(3, 0)
-                        if out_tokens <= 0:
-                            continue
-
-                        model = step_model_map.get(idx, default_model)
+                        boundary = bisect_right(model_boundaries, idx) - 1
+                        model = step_model_map[model_boundaries[boundary]] if boundary >= 0 else default_model
+                        effort, tier, speed = step_settings_map[model_boundaries[boundary]] if boundary >= 0 else default_settings
                         span = create_span(
                             agent=self.name,
                             session_id=session_id,
@@ -266,6 +293,9 @@ class AntigravityAdapter(BaseAdapter):
                             ended_at=t_end,
                             tokens=out_tokens,
                             timing_source="agy-step-proto",
+                            reasoning_effort=effort,
+                            service_tier=tier,
+                            speed=speed,
                         )
                         if span is not None:
                             spans.append(span)
@@ -320,24 +350,15 @@ class AntigravityAdapter(BaseAdapter):
 
         events: list[TimelineEvent] = []
         model = "gemini"
+        latest_settings = (None, None, None)
 
         try:
             with closing(open_ro_db(db_path)) as conn:
                 cur = conn.cursor()
 
-                # Get model name from gen_metadata
-                try:
-                    cur.execute("SELECT data FROM gen_metadata WHERE data IS NOT NULL;")
-                    for (data,) in cur.fetchall():
-                        for fn, wt, val in parse_proto_fields(data):
-                            if fn == 1 and isinstance(val, bytes):
-                                for sfn, swt, sval in parse_proto_fields(val):
-                                    if sfn == 19 and isinstance(sval, bytes):
-                                        m_name = sval.decode("utf-8", errors="ignore").strip()
-                                        if m_name:
-                                            model = m_name
-                except Exception:
-                    pass
+                model, default_settings, step_model_map, step_settings_map = self._generation_settings(conn)
+                latest_settings = default_settings
+                model_boundaries = sorted(step_model_map)
 
                 # Read all steps
                 cur.execute(
@@ -345,12 +366,20 @@ class AntigravityAdapter(BaseAdapter):
                     "WHERE metadata IS NOT NULL ORDER BY idx;"
                 )
                 for idx, step_type, meta, payload in cur.fetchall():
+                    first_new_event = len(events)
+                    boundary = bisect_right(model_boundaries, idx) - 1
+                    settings = step_settings_map[model_boundaries[boundary]] if boundary >= 0 else default_settings
                     fields = {f[0]: f[2] for f in parse_proto_fields(meta)}
                     f1 = fields.get(1)
-                    f7 = fields.get(7) or fields.get(8) or f1
+                    f7 = fields.get(7)
+                    f8 = fields.get(8)
 
                     t_start = parse_proto_timestamp(f1) if isinstance(f1, bytes) else None
-                    t_end = parse_proto_timestamp(f7) if isinstance(f7, bytes) else t_start
+                    t_end = parse_proto_timestamp(f7) if isinstance(f7, bytes) else None
+                    if t_end is None and isinstance(f8, bytes):
+                        t_end = parse_proto_timestamp(f8)
+                    if t_end is None:
+                        t_end = t_start
                     if t_start is None:
                         continue
 
@@ -387,6 +416,8 @@ class AntigravityAdapter(BaseAdapter):
 
                     # Step 15: Assistant Response
                     elif step_type == 15:
+                        model = step_model_map[model_boundaries[boundary]] if boundary >= 0 else model
+                        latest_settings = settings
                         out_tokens = 0
                         f9 = fields.get(9)
                         if isinstance(f9, bytes):
@@ -441,6 +472,9 @@ class AntigravityAdapter(BaseAdapter):
                                 duration=dur,
                             )
                         )
+                    for index in range(first_new_event, len(events)):
+                        events[index] = replace(events[index], reasoning_effort=settings[0],
+                                                service_tier=settings[1], speed=settings[2])
         except Exception:
             pass
 
@@ -456,6 +490,9 @@ class AntigravityAdapter(BaseAdapter):
             updated_at=updated_at,
             events=events,
             cwd=self._workspace_path(session_id),
+            reasoning_effort=latest_settings[0],
+            service_tier=latest_settings[1],
+            speed=latest_settings[2],
         )
 
     def _workspace_path(self, session_id: str) -> str | None:

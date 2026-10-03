@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Format stats duration as hours, minutes, and seconds while keeping JSON durations numeric.
+- Show optional recorded reasoning effort and speed mode on streams, sessions, and timeline events; include raw metadata in every JSON view and distinct configurations in stats windows.
+- Ignore repeated Codex cumulative usage snapshots instead of assigning previous response tokens to later reasoning.
+- Read the native Codex diagnostic log schema and preserve context across Codex and Claude completion-window cutoffs.
+- Carry Antigravity model and optional generation settings across step ranges; retain invalid spans for exclusion counts and tolerate malformed protobuf records.
+- Clarify that Claude single-record turn-span timing can include latency and waiting.
+
 ## [0.1.2] — 2026-10-04
 
 - Add `stats -w` / `--watch` with a configurable `--interval` (default: 2 seconds).

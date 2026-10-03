@@ -71,6 +71,63 @@ class TestClaudeAdapter(unittest.TestCase):
         self.assertEqual(len(adapter.collect_sessions()), 2)
         self.assertEqual([timeline.session_id for timeline in adapter.collect_sessions(min_timestamp=cutoff)], ["boundary"])
 
+    def test_span_cutoff_preserves_first_chunk_and_prompt_context(self):
+        for records, cutoff_text, source in [
+            (self._stream_records(), "2026-10-03T10:00:03+00:00", "chunk-stream"),
+            ([self._stream_records()[0], self._stream_records()[-1]], "2026-10-03T10:00:01+00:00", "turn-span"),
+        ]:
+            with self.subTest(source=source):
+                self._write_session(records)
+                adapter = ClaudeAdapter(self.root)
+                expected = adapter.collect()[0]
+                cutoff = datetime.fromisoformat(cutoff_text).timestamp()
+                windowed = adapter.collect(min_timestamp=cutoff)
+                self.assertEqual(windowed, [expected])
+                self.assertTrue(windowed[0].is_valid)
+                self.assertEqual(windowed[0].timing_source, source)
+                self.assertEqual(adapter.collect(min_timestamp=expected.ended_at), [expected])
+                self.assertEqual(adapter.collect(min_timestamp=expected.ended_at + 1), [])
+
+    def test_effort_and_speed_use_recorded_fields_with_final_usage(self):
+        records = self._stream_records()
+        records[1]["message"]["output_config"] = {"effort": "medium"}
+        records[-1]["message"]["output_config"] = {"effort": "high"}
+        records[-1]["message"]["usage"].update(service_tier="standard", speed="fast")
+        self._write_session(records)
+        span = ClaudeAdapter(self.root).collect()[0]
+        self.assertEqual(span.reasoning_effort, "high")
+        self.assertEqual(span.service_tier, "standard")
+        self.assertEqual(span.speed, "fast")
+        self.assertEqual(span.speed_mode, "fast")
+        self.assertEqual(span.tokens, 100)
+        timeline = ClaudeAdapter(self.root).collect_sessions()[0]
+        self.assertEqual(timeline.reasoning_effort, "high")
+        self.assertEqual(timeline.speed_mode, "fast")
+        for event in timeline.events:
+            if event.kind in {"assistant_message", "reasoning", "tool_call"}:
+                self.assertEqual(event.reasoning_effort, "high")
+                self.assertEqual(event.speed_mode, "fast")
+        self._write_session(self._stream_records())
+        unknown = ClaudeAdapter(self.root).collect()[0]
+        self.assertIsNone(unknown.reasoning_effort)
+        self.assertIsNone(unknown.speed_mode)
+
+    def test_effort_recorded_only_in_intermediate_chunk_is_preserved(self):
+        records = self._stream_records()
+        middle = json.loads(json.dumps(records[1]))
+        middle["timestamp"] = "2026-10-03T10:00:03Z"
+        middle["message"]["output_config"] = {"effort": "high"}
+        records.insert(2, middle)
+        self._write_session(records)
+        adapter = ClaudeAdapter(self.root)
+        self.assertEqual(adapter.collect()[0].reasoning_effort, "high")
+        timeline = adapter.collect_sessions()[0]
+        self.assertEqual(timeline.reasoning_effort, "high")
+        self.assertEqual(timeline.assistant_messages, 1)
+        self.assertEqual(timeline.tool_calls, 1)
+        self.assertTrue(all(e.reasoning_effort == "high" for e in timeline.events
+                            if e.kind in {"assistant_message", "reasoning", "tool_call"}))
+
     def test_detect_claude_projects(self):
         adapter = ClaudeAdapter(self.root)
         self.assertFalse(adapter.detect())
