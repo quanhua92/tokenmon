@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from llm_monitor.adapters.claude import ClaudeAdapter
@@ -15,6 +16,60 @@ class TestClaudeAdapter(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def _write_session(self, records, name="session"):
+        projects = self.root / "projects" / "regression"
+        projects.mkdir(parents=True, exist_ok=True)
+        path = projects / f"{name}.jsonl"
+        path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+        return path
+
+    def _stream_records(self):
+        return [
+            {"type": "user", "message": {"content": "hello"}, "timestamp": "2026-10-03T10:00:00Z"},
+            {"type": "assistant", "message": {"id": "a-1", "model": "test-model", "content": [{"type": "thinking"}, {"type": "tool_use", "id": "tool-1", "name": "Bash"}], "usage": {"output_tokens": 10}}, "timestamp": "2026-10-03T10:00:02Z"},
+            {"type": "assistant", "message": {"id": "a-1", "model": "test-model", "content": [{"type": "thinking"}, {"type": "tool_use", "id": "tool-1", "name": "Bash"}], "usage": {"output_tokens": 100}}, "timestamp": "2026-10-03T10:00:04Z"},
+        ]
+
+    def test_stream_timeline_keeps_final_usage_and_unique_events(self):
+        self._write_session(self._stream_records())
+        adapter = ClaudeAdapter(self.root)
+        timeline = adapter.collect_sessions()[0]
+        self.assertEqual(timeline.total_tokens, adapter.collect()[0].tokens)
+        self.assertEqual(timeline.total_tokens, 100)
+        self.assertEqual(timeline.assistant_messages, 1)
+        self.assertEqual(timeline.tool_calls, 1)
+        self.assertEqual(sum(event.kind == "reasoning" for event in timeline.events), 1)
+        self.assertEqual(timeline.updated_at, datetime.fromisoformat("2026-10-03T10:00:04+00:00").timestamp())
+
+    def test_malformed_records_do_not_discard_later_generation(self):
+        junk = [
+            [], None, "text", 42, True,
+            {"type": [], "timestamp": "2026-10-03T10:00:01Z"},
+            {"type": "assistant", "message": None, "timestamp": "2026-10-03T10:00:01Z"},
+            {"type": "assistant", "message": {"usage": []}, "timestamp": "2026-10-03T10:00:01Z"},
+            {"type": "user", "message": None, "timestamp": "2026-10-03T10:00:01Z"},
+        ]
+        for invalid in junk:
+            with self.subTest(invalid=invalid):
+                records = self._stream_records()
+                records.insert(1, invalid)
+                self._write_session(records)
+                adapter = ClaudeAdapter(self.root)
+                spans = adapter.collect()
+                self.assertEqual(len(spans), 1)
+                self.assertEqual(spans[0].tokens, 100)
+                timeline = adapter.collect_sessions()[0]
+                self.assertEqual(timeline.assistant_messages, 1)
+                self.assertEqual(timeline.total_tokens, 100)
+
+    def test_session_cutoff_uses_event_time_and_keeps_boundary(self):
+        self._write_session(self._stream_records(), "older")
+        self._write_session([{"type": "user", "message": {"content": "hello"}, "timestamp": "2026-10-03T10:00:05Z"}], "boundary")
+        cutoff = datetime.fromisoformat("2026-10-03T10:00:05+00:00").timestamp()
+        adapter = ClaudeAdapter(self.root)
+        self.assertEqual(len(adapter.collect_sessions()), 2)
+        self.assertEqual([timeline.session_id for timeline in adapter.collect_sessions(min_timestamp=cutoff)], ["boundary"])
 
     def test_detect_claude_projects(self):
         adapter = ClaudeAdapter(self.root)
@@ -258,5 +313,3 @@ class TestClaudeAdapter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

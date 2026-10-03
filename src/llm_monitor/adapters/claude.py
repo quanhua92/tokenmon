@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -108,10 +109,12 @@ class ClaudeAdapter(BaseAdapter):
                         record = json.loads(line)
                     except Exception:
                         continue
+                    if not isinstance(record, dict):
+                        continue
 
                     rec_type = record.get("type")
                     at = parse_iso_timestamp(record.get("timestamp"))
-                    if at is None:
+                    if at is None or not isinstance(rec_type, str):
                         continue
 
                     if min_timestamp is not None and at < min_timestamp:
@@ -122,7 +125,11 @@ class ClaudeAdapter(BaseAdapter):
 
                     elif rec_type == "assistant":
                         msg = record.get("message", {})
-                        msg_id = msg.get("id") or record.get("uuid") or f"msg_{at}"
+                        if not isinstance(msg, dict) or not isinstance(msg.get("usage", {}), dict):
+                            continue
+                        msg_id = msg.get("id") or record.get("uuid")
+                        if not isinstance(msg_id, str) or not msg_id:
+                            msg_id = f"msg_{at}"
                         if msg_id not in message_chunks:
                             message_chunks[msg_id] = []
                             message_starts[msg_id] = prev_event_time
@@ -142,7 +149,9 @@ class ClaudeAdapter(BaseAdapter):
             req_start = message_starts.get(msg_id)
 
             msg = last_rec.get("message", {})
-            model = msg.get("model") or "claude"
+            model = msg.get("model")
+            if not isinstance(model, str) or not model:
+                model = "claude"
             usage = msg.get("usage", {})
             tokens = usage.get("output_tokens") or 0
 
@@ -181,7 +190,7 @@ class ClaudeAdapter(BaseAdapter):
         for p in session_files:
             try:
                 timeline = self._parse_session_timeline(p.stem, p)
-                if timeline.events:
+                if timeline.events and (min_timestamp is None or timeline.updated_at >= min_timestamp):
                     timelines.append(timeline)
             except Exception as e:
                 logger.error("ClaudeAdapter: skipping unparseable session timeline '%s': %s", p, e)
@@ -192,7 +201,8 @@ class ClaudeAdapter(BaseAdapter):
     def _parse_session_timeline(self, session_id: str, jsonl_path: Path) -> SessionTimeline:
         events: list[TimelineEvent] = []
         model = "claude"
-        seen_assistant_ids: set[str] = set()
+        assistant_event_indexes: dict[str, int] = {}
+        seen_content_blocks: set[tuple[str, str, str | int]] = set()
         cwd: str | None = None
 
         try:
@@ -205,6 +215,8 @@ class ClaudeAdapter(BaseAdapter):
                         rec = json.loads(line)
                     except Exception:
                         continue
+                    if not isinstance(rec, dict):
+                        continue
 
                     if cwd is None:
                         c = rec.get("cwd")
@@ -213,20 +225,24 @@ class ClaudeAdapter(BaseAdapter):
 
                     rec_type = rec.get("type")
                     at = parse_iso_timestamp(rec.get("timestamp"))
-                    if at is None:
+                    if at is None or not isinstance(rec_type, str):
                         continue
 
-                    turn_id = rec.get("uuid") or f"turn_{at}"
+                    turn_id = rec.get("uuid")
+                    if not isinstance(turn_id, str) or not turn_id:
+                        turn_id = f"turn_{at}"
 
                     if rec_type == "user":
                         msg = rec.get("message", {})
+                        if not isinstance(msg, dict):
+                            continue
                         content = msg.get("content")
                         summary = "User message"
                         if isinstance(content, str) and content.strip():
                             summary = f"User: {content.strip()[:60]}"
                         elif isinstance(content, list) and content:
                             first_block = content[0]
-                            if isinstance(first_block, dict) and first_block.get("text"):
+                            if isinstance(first_block, dict) and isinstance(first_block.get("text"), str):
                                 summary = f"User: {first_block['text'][:60]}"
 
                         events.append(
@@ -240,7 +256,7 @@ class ClaudeAdapter(BaseAdapter):
 
                     elif rec_type == "last-prompt":
                         prompt_text = rec.get("lastPrompt")
-                        if prompt_text and not (events and events[-1].kind == "user_message" and abs(events[-1].timestamp - at) < 1.0):
+                        if isinstance(prompt_text, str) and prompt_text and not (events and events[-1].kind == "user_message" and abs(events[-1].timestamp - at) < 1.0):
                             events.append(
                                 TimelineEvent(
                                     timestamp=at,
@@ -252,20 +268,33 @@ class ClaudeAdapter(BaseAdapter):
 
                     elif rec_type == "assistant":
                         msg = rec.get("message", {})
-                        msg_id = msg.get("id") or turn_id
+                        if not isinstance(msg, dict) or not isinstance(msg.get("usage", {}), dict):
+                            continue
+                        msg_id = msg.get("id")
+                        if not isinstance(msg_id, str) or not msg_id:
+                            msg_id = turn_id
                         cur_model = msg.get("model")
-                        if cur_model:
+                        if isinstance(cur_model, str) and cur_model:
                             model = cur_model
 
                         usage = msg.get("usage", {})
                         out_tokens = usage.get("output_tokens") or 0
+                        if not isinstance(out_tokens, int) or out_tokens < 0:
+                            out_tokens = 0
 
                         # Check content blocks for tools or thinking
                         content = msg.get("content", [])
                         if isinstance(content, list):
-                            for block in content:
+                            for block_index, block in enumerate(content):
                                 if isinstance(block, dict):
                                     b_type = block.get("type")
+                                    if not isinstance(b_type, str) or b_type not in {"thinking", "tool_use"}:
+                                        continue
+                                    block_id = block.get("id")
+                                    block_key = (msg_id, b_type, block_id if isinstance(block_id, str) else block_index)
+                                    if block_key in seen_content_blocks:
+                                        continue
+                                    seen_content_blocks.add(block_key)
                                     if b_type == "thinking":
                                         events.append(
                                             TimelineEvent(
@@ -286,18 +315,22 @@ class ClaudeAdapter(BaseAdapter):
                                             )
                                         )
 
-                        # Only add one assistant summary event per message ID to prevent duplicate counts
-                        if msg_id not in seen_assistant_ids:
-                            seen_assistant_ids.add(msg_id)
-                            events.append(
-                                TimelineEvent(
-                                    timestamp=at,
-                                    kind="assistant_message",
-                                    turn_id=turn_id,
-                                    summary=f"Assistant response ({out_tokens} tokens)",
-                                    tokens=out_tokens,
-                                )
+                        # Keep one response per message ID, updated with the final chunk's usage.
+                        assistant_event = TimelineEvent(
+                            timestamp=at,
+                            kind="assistant_message",
+                            turn_id=turn_id,
+                            summary=f"Assistant response ({out_tokens} tokens)",
+                            tokens=out_tokens,
+                        )
+                        if msg_id in assistant_event_indexes:
+                            index = assistant_event_indexes[msg_id]
+                            events[index] = replace(
+                                assistant_event, turn_id=events[index].turn_id,
                             )
+                        else:
+                            assistant_event_indexes[msg_id] = len(events)
+                            events.append(assistant_event)
 
                     elif rec_type == "tool_result":
                         tname = rec.get("name") or "tool"

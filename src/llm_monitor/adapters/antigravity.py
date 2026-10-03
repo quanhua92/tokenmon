@@ -283,7 +283,7 @@ class AntigravityAdapter(BaseAdapter):
         for p in dbs:
             try:
                 timeline = self.parse_session_timeline(p.stem)
-                if timeline.events:
+                if timeline.events and (min_timestamp is None or timeline.updated_at >= min_timestamp):
                     timelines.append(timeline)
             except Exception as e:
                 logger.error("AntigravityAdapter: error parsing session timeline '%s': %s", p, e)

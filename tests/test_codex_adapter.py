@@ -4,6 +4,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from llm_monitor.adapters.codex import CodexAdapter
@@ -60,6 +61,73 @@ class TestCodexAdapter(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def _write_session(self, records, name="session"):
+        sessions = self.root / "sessions"
+        sessions.mkdir(exist_ok=True)
+        path = sessions / f"{name}.jsonl"
+        path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+        return path
+
+    def _generation_records(self):
+        start = int(datetime.fromisoformat("2026-10-03T10:00:02+00:00").timestamp() * 1000)
+        return [
+            {"type": "turn_context", "payload": {"turn_id": "turn-1", "model": "test-model"}, "timestamp": "2026-10-03T10:00:00Z"},
+            {"type": "response_item", "payload": {"type": "reasoning", "id": "r-1"}, "timestamp": "2026-10-03T10:00:02Z"},
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant", "id": "a-1"}, "timestamp": "2026-10-03T10:00:03Z"},
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "Reasoning", "id": "r-1"}, "started_at_ms": start, "completed_at_ms": start + 1000}, "timestamp": "2026-10-03T10:00:03Z"},
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "AgentMessage", "id": "a-1"}, "started_at_ms": start + 1000, "completed_at_ms": start + 2000}, "timestamp": "2026-10-03T10:00:04Z"},
+            {"type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {"output_tokens": 120}}}, "timestamp": "2026-10-03T10:00:04Z"},
+        ]
+
+    def test_timeline_token_count_and_duplicate_usage(self):
+        records = self._generation_records()
+        count = records[-1]
+        usage = {"type": "token_usage_record", "payload": {"response_id": "resp-1", "usage": {"output_tokens": 120}}, "timestamp": "2026-10-03T10:00:04Z"}
+        for usage_records in [[count], [usage], [count, usage], [usage, count]]:
+            with self.subTest(usage_records=usage_records):
+                self._write_session(records[:-1] + usage_records)
+                timeline = CodexAdapter(self.root).collect_sessions()[0]
+                self.assertEqual(timeline.total_tokens, 120)
+                self.assertEqual(timeline.assistant_messages, 1)
+                self.assertIsNone(next(event for event in timeline.events if event.kind == "reasoning").tokens)
+
+    def test_malformed_records_do_not_discard_later_generation(self):
+        junk = [
+            [], None, "text", 42, True,
+            {"type": [], "payload": {}, "timestamp": "2026-10-03T10:00:01Z"},
+            {"type": "response_item", "payload": {"type": []}, "timestamp": "2026-10-03T10:00:01Z"},
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": []}}, "timestamp": "2026-10-03T10:00:01Z"},
+            {"type": "event_msg", "payload": {"type": "token_count", "info": []}, "timestamp": "2026-10-03T10:00:01Z"},
+        ]
+        for invalid in junk:
+            with self.subTest(invalid=invalid):
+                records = self._generation_records()
+                records.insert(1, invalid)
+                self._write_session(records)
+                adapter = CodexAdapter(self.root)
+                spans = adapter.collect()
+                self.assertEqual(len(spans), 1)
+                self.assertEqual(spans[0].tokens, 120)
+                self.assertEqual(spans[0].model, "test-model")
+                self.assertEqual(adapter.collect_sessions()[0].assistant_messages, 1)
+
+    def test_usage_without_output_does_not_overwrite_previous_turn(self):
+        records = self._generation_records() + [
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-2"}, "timestamp": "2026-10-03T10:00:05Z"},
+            {"type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {"output_tokens": 200}}}, "timestamp": "2026-10-03T10:00:06Z"},
+        ]
+        self._write_session(records)
+        self.assertEqual(CodexAdapter(self.root).collect_sessions()[0].total_tokens, 120)
+
+    def test_session_cutoff_uses_event_time_and_keeps_boundary(self):
+        self._write_session(self._generation_records(), "older")
+        records = [{"type": "response_item", "payload": {"type": "message", "role": "assistant"}, "timestamp": "2026-10-03T10:00:05Z"}]
+        self._write_session(records, "boundary")
+        cutoff = datetime.fromisoformat("2026-10-03T10:00:05+00:00").timestamp()
+        adapter = CodexAdapter(self.root)
+        self.assertEqual(len(adapter.collect_sessions()), 2)
+        self.assertEqual([timeline.session_id for timeline in adapter.collect_sessions(min_timestamp=cutoff)], ["boundary"])
 
     def test_detect_returns_true_when_files_present(self):
         adapter = CodexAdapter(self.root)
@@ -175,4 +243,3 @@ class TestCodexAdapter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

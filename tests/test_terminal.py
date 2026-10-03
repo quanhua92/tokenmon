@@ -79,6 +79,15 @@ class TestTerminalShell(unittest.TestCase):
     def test_shell_exit_command(self):
         self.assertTrue(self.shell.do_exit(""))
 
+    def test_shell_agents_lists_registry_and_active_adapter(self):
+        with patch("sys.stdout", new=io.StringIO()) as output:
+            self.shell.do_agents("")
+        text = output.getvalue()
+        self.assertIn("codex", text)
+        self.assertIn("[Active]", text)
+        self.assertIn("claude", text)
+        self.assertIn("antigravity", text)
+
 
 if __name__ == "__main__":
     unittest.main()

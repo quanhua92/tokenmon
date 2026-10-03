@@ -78,6 +78,16 @@ class TestAntigravityAdapter(unittest.TestCase):
         adapter = AntigravityAdapter(root=self.temp_dir)
         self.assertIsNone(adapter._workspace_path("anything"))
 
+    def test_session_cutoff_uses_event_time_and_keeps_boundary(self):
+        # Minimal Timestamp protos: seconds 1000 and 2000, wrapped in metadata field 1.
+        for session_id, timestamp in [("older", b"\x08\xe8\x07"), ("boundary", b"\x08\xd0\x0f")]:
+            with sqlite3.connect(self.conv_dir / f"{session_id}.db") as conn:
+                conn.execute("CREATE TABLE steps (idx integer, step_type integer, metadata blob, step_payload blob)")
+                conn.execute("INSERT INTO steps VALUES (?, ?, ?, ?)", (1, 14, b"\x0a\x03" + timestamp, None))
+        adapter = AntigravityAdapter(root=self.temp_dir)
+        self.assertEqual(len(adapter.collect_sessions()), 2)
+        self.assertEqual([timeline.session_id for timeline in adapter.collect_sessions(min_timestamp=2000)], ["boundary"])
+
 
 if __name__ == "__main__":
     unittest.main()

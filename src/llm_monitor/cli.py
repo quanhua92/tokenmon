@@ -579,6 +579,7 @@ def main() -> int:
             except Exception as e:
                 logger.error("Adapter '%s' error collecting sessions: %s", adapter.name, e)
                 print(f"Warning: Adapter '{adapter.name}' failed to parse sessions: {e}", file=sys.stderr)
+        timelines.sort(key=lambda t: t.updated_at, reverse=True)
         if not timelines:
             print("No sessions found to inspect timeline.", file=sys.stderr)
             return 1
@@ -656,6 +657,8 @@ def main() -> int:
             except Exception as e:
                 logger.error("Adapter '%s' error collecting sessions: %s", adapter.name, e)
                 print(f"Warning: Adapter '{adapter.name}' failed to parse sessions: {e}", file=sys.stderr)
+
+        timelines.sort(key=lambda t: t.updated_at, reverse=True)
 
         if args.json:
             out = [

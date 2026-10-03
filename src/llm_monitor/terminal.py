@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 
 from llm_monitor import __version__
-from llm_monitor.adapters import BaseAdapter, detect_available_adapters, get_adapter
+from llm_monitor.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
 from llm_monitor.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
 from llm_monitor.cli import ASCII_LOGO, format_recent_span, format_sessions_table, format_table, format_timeline_view
 from llm_monitor.models import GenerationSpan, SessionTimeline

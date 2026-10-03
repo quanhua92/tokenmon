@@ -213,6 +213,8 @@ class CodexAdapter(BaseAdapter):
                         record = json.loads(line)
                     except Exception:
                         continue
+                    if not isinstance(record, dict):
+                        continue
 
                     val = record.get("payload")
                     at = parse_timestamp(record.get("timestamp"))
@@ -223,6 +225,8 @@ class CodexAdapter(BaseAdapter):
 
                     kind = record.get("type")
                     event = val.get("type")
+                    if not isinstance(kind, str) or (event is not None and not isinstance(event, str)):
+                        continue
 
                     if kind == "turn_context":
                         t = val.get("turn_id")
@@ -235,7 +239,7 @@ class CodexAdapter(BaseAdapter):
                     elif kind == "event_msg":
                         if event == "item_completed":
                             item = val.get("item")
-                            if isinstance(item, dict) and item.get("type") in {
+                            if isinstance(item, dict) and isinstance(item.get("type"), str) and item.get("type") in {
                                 "Reasoning",
                                 "AgentMessage",
                             }:
@@ -396,7 +400,7 @@ class CodexAdapter(BaseAdapter):
         for session_id, jsonl_path, default_model in sessions:
             try:
                 timeline = self._parse_session_timeline(session_id, jsonl_path, default_model)
-                if timeline.events:
+                if timeline.events and (min_timestamp is None or timeline.updated_at >= min_timestamp):
                     timelines.append(timeline)
             except Exception as e:
                 logger.error("CodexAdapter: skipping unparseable session timeline '%s': %s", jsonl_path, e)
@@ -425,6 +429,8 @@ class CodexAdapter(BaseAdapter):
                         record = json.loads(line)
                     except Exception:
                         continue
+                    if not isinstance(record, dict):
+                        continue
 
                     val = record.get("payload")
                     at = parse_timestamp(record.get("timestamp"))
@@ -433,6 +439,8 @@ class CodexAdapter(BaseAdapter):
 
                     kind = record.get("type")
                     event = val.get("type")
+                    if not isinstance(kind, str) or (event is not None and not isinstance(event, str)):
+                        continue
 
                     if cwd is None and kind in {"session_meta", "turn_context"}:
                         c = val.get("cwd")
@@ -527,18 +535,27 @@ class CodexAdapter(BaseAdapter):
                                 )
                             )
 
-                    elif kind == "token_usage_record" or (kind == "event_msg" and event == "token_count"):
-                        info = val.get("usage") if kind == "token_usage_record" else val.get("info", {}).get("last_token_usage")
+                    # Usage events must also be processed after the event_msg branch.
+                    if kind == "token_usage_record" or (kind == "event_msg" and event == "token_count"):
+                        info = val.get("usage")
+                        if kind == "event_msg":
+                            count_info = val.get("info")
+                            info = count_info.get("last_token_usage") if isinstance(count_info, dict) else None
                         tokens = info.get("output_tokens") if isinstance(info, dict) else None
-                        if tokens and events:
+                        if isinstance(tokens, int) and tokens >= 0 and events:
                             for idx in range(len(events) - 1, -1, -1):
                                 ev = events[idx]
-                                if ev.kind in {"assistant_message", "reasoning"} and ev.tokens is None:
+                                if ev.turn_id != turn_id:
+                                    break
+                                if ev.kind in {"assistant_message", "reasoning"}:
+                                    # The two usage formats may describe the same output.
+                                    # Update its latest event instead of backfilling earlier reasoning.
+                                    summary = ev.summary.removesuffix(f" ({ev.tokens} tokens)")
                                     events[idx] = TimelineEvent(
                                         timestamp=ev.timestamp,
                                         kind=ev.kind,
                                         turn_id=ev.turn_id,
-                                        summary=f"{ev.summary} ({tokens} tokens)",
+                                        summary=f"{summary} ({tokens} tokens)",
                                         tokens=tokens,
                                         duration=ev.duration,
                                     )

@@ -1,10 +1,16 @@
 """Integration tests for llm-monitor CLI."""
 
 import json
+import io
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
+
+from llm_monitor.cli import main
+from llm_monitor.models import SessionTimeline
 
 
 class TestCLIIntegration(unittest.TestCase):
@@ -42,6 +48,23 @@ class TestCLIIntegration(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_multi_adapter_sessions_are_globally_sorted(self):
+        older = SessionTimeline("older", "codex", "m", 1.0, 1.0)
+        newer = SessionTimeline("newer", "claude", "m", 2.0, 2.0)
+        adapters = [Mock(name="older_adapter"), Mock(name="newer_adapter")]
+        adapters[0].collect_sessions.return_value = [older]
+        adapters[1].collect_sessions.return_value = [newer]
+        for args, expected in [
+            (["logs", "--json", "--all"], "newer"),
+            (["ps", "--json", "--all"], ["newer", "older"]),
+            (["logs", "--window", "all", "--json"], ["newer", "older"]),
+        ]:
+            with self.subTest(args=args), patch.object(sys, "argv", ["llm-monitor"] + args), patch("llm_monitor.cli.detect_available_adapters", return_value=adapters), patch("sys.stdout", new=io.StringIO()) as output:
+                self.assertEqual(main(), 0)
+                result = json.loads(output.getvalue())
+            selected = [timeline["session_id"] for timeline in result] if isinstance(result, list) else result["session_id"]
+            self.assertEqual(selected, expected)
 
     def test_cli_table_output(self):
         # Test bare alias to stats
@@ -314,5 +337,4 @@ class TestCLIIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
