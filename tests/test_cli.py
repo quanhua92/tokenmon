@@ -106,7 +106,39 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("USER", res.stdout)
         self.assertIn("ASSISTANT", res.stdout)
 
+    def test_cli_compact_and_wide_flags(self):
+        # Test --compact flag
+        cmd_compact = [
+            "python3",
+            "-m",
+            "llm_monitor",
+            "codex",
+            "--home",
+            str(self.root),
+            "--compact",
+        ]
+        res_compact = subprocess.run(cmd_compact, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res_compact.returncode, 0)
+        self.assertIn("TPS", res_compact.stdout)
+        self.assertNotIn("Time (s)", res_compact.stdout)
+
+        # Test --wide flag
+        cmd_wide = [
+            "python3",
+            "-m",
+            "llm_monitor",
+            "codex",
+            "--home",
+            str(self.root),
+            "--wide",
+        ]
+        res_wide = subprocess.run(cmd_wide, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res_wide.returncode, 0)
+        self.assertIn("Time (s)", res_wide.stdout)
+        self.assertIn("Range", res_wide.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

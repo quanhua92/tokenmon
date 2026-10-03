@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -14,32 +15,52 @@ from llm_monitor.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_wi
 from llm_monitor.models import GenerationSpan, SessionTimeline, WindowSummary
 
 
-def format_table(summaries: list[WindowSummary]) -> str:
-    headers = [
-        "Time Window",
-        "Valid / Total",
-        "Tokens",
-        "Time (s)",
-        "Weighted TPS",
-        "Median TPS",
-        "Min - Max TPS",
-    ]
-    rows = []
-    for s in summaries:
-        w_tps = f"{s.weighted_tps:.1f}" if s.weighted_tps is not None else "—"
-        med_tps = f"{s.median_tps:.1f}" if s.median_tps is not None else "—"
-        range_tps = f"{s.min_tps:.1f} - {s.max_tps:.1f}" if s.min_tps is not None else "—"
-        rows.append(
-            [
-                s.window_name,
-                f"{s.valid_spans} / {s.total_spans}",
-                f"{s.total_tokens:,}",
-                f"{s.total_duration:.2f}",
-                w_tps,
-                med_tps,
-                range_tps,
-            ]
-        )
+def format_table(summaries: list[WindowSummary], compact: bool | None = None) -> str:
+    if compact is None:
+        term_cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+        compact = term_cols < 88
+
+    if compact:
+        headers = ["Window", "Outputs", "Tokens", "TPS", "Median"]
+        rows = []
+        for s in summaries:
+            w_tps = f"{s.weighted_tps:.1f}" if s.weighted_tps is not None else "—"
+            med_tps = f"{s.median_tps:.1f}" if s.median_tps is not None else "—"
+            rows.append(
+                [
+                    s.window_name,
+                    f"{s.valid_spans}/{s.total_spans}",
+                    f"{s.total_tokens:,}",
+                    w_tps,
+                    med_tps,
+                ]
+            )
+    else:
+        headers = [
+            "Window",
+            "Outputs",
+            "Tokens",
+            "Time (s)",
+            "TPS (wtd)",
+            "Median",
+            "Range",
+        ]
+        rows = []
+        for s in summaries:
+            w_tps = f"{s.weighted_tps:.1f}" if s.weighted_tps is not None else "—"
+            med_tps = f"{s.median_tps:.1f}" if s.median_tps is not None else "—"
+            range_tps = f"{s.min_tps:.1f} - {s.max_tps:.1f}" if s.min_tps is not None else "—"
+            rows.append(
+                [
+                    s.window_name,
+                    f"{s.valid_spans}/{s.total_spans}",
+                    f"{s.total_tokens:,}",
+                    f"{s.total_duration:.1f}",
+                    w_tps,
+                    med_tps,
+                    range_tps,
+                ]
+            )
 
     col_widths = [len(h) for h in headers]
     for row in rows:
@@ -62,36 +83,60 @@ def format_table(summaries: list[WindowSummary]) -> str:
     return "\n".join(lines)
 
 
-def format_sessions_table(timelines: list[SessionTimeline], now: float) -> str:
-    headers = [
-        "Session ID",
-        "Model",
-        "User Prompts",
-        "Assistant Turns",
-        "Tools",
-        "Tokens",
-        "Duration",
-        "Status",
-    ]
-    rows = []
-    for t in timelines:
-        mins = int(t.session_duration // 60)
-        secs = int(t.session_duration % 60)
-        dur_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
-        status_str = t.status(now)
+def format_sessions_table(
+    timelines: list[SessionTimeline],
+    now: float,
+    compact: bool | None = None,
+) -> str:
+    if compact is None:
+        term_cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+        compact = term_cols < 92
 
-        rows.append(
-            [
-                t.session_id[:16],
-                t.model,
-                str(t.user_messages),
-                str(t.assistant_messages),
-                str(t.tool_calls),
-                f"{t.total_tokens:,}",
-                dur_str,
-                status_str,
-            ]
-        )
+    if compact:
+        headers = ["Session", "Model", "Turns", "Tokens", "Duration", "Status"]
+        rows = []
+        for t in timelines:
+            mins = int(t.session_duration // 60)
+            secs = int(t.session_duration % 60)
+            dur_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            rows.append(
+                [
+                    t.session_id[:10],
+                    t.model[:12],
+                    str(t.assistant_messages),
+                    f"{t.total_tokens:,}",
+                    dur_str,
+                    t.status(now),
+                ]
+            )
+    else:
+        headers = [
+            "Session ID",
+            "Model",
+            "Prompts",
+            "Turns",
+            "Tools",
+            "Tokens",
+            "Duration",
+            "Status",
+        ]
+        rows = []
+        for t in timelines:
+            mins = int(t.session_duration // 60)
+            secs = int(t.session_duration % 60)
+            dur_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            rows.append(
+                [
+                    t.session_id[:16],
+                    t.model,
+                    str(t.user_messages),
+                    str(t.assistant_messages),
+                    str(t.tool_calls),
+                    f"{t.total_tokens:,}",
+                    dur_str,
+                    t.status(now),
+                ]
+            )
 
     col_widths = [len(h) for h in headers]
     for row in rows:
@@ -199,6 +244,16 @@ def main() -> int:
         "--interactive",
         action="store_true",
         help="Launch interactive terminal shell (using stdlib cmd)",
+    )
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Use concise, narrow table layout suited for small screens or split panes",
+    )
+    parser.add_argument(
+        "--wide",
+        action="store_true",
+        help="Force full-width table layout with all diagnostic columns",
     )
     parser.add_argument(
         "-v",
@@ -316,9 +371,10 @@ def main() -> int:
             print(json.dumps(out, indent=2))
             return 0
 
+        compact_flag = True if args.compact else (False if args.wide else None)
         print(f"\n📂 Active & Recent Sessions ({len(timelines)} found):")
         if timelines:
-            print(format_sessions_table(timelines, now))
+            print(format_sessions_table(timelines, now, compact=compact_flag))
             print("Tip: Run `llm-monitor --timeline <SESSION_ID>` to see full event chronology.\n")
         else:
             print("No sessions found.")
@@ -361,10 +417,11 @@ def main() -> int:
         print("No generation output streams found in the inspected sessions.")
         return 0
 
+    compact_flag = True if args.compact else (False if args.wide else None)
     analysis = analyze_windows(all_spans, window_names=windows, now=now)
     for model, summaries in analysis.items():
         print(f"🤖 Model: \033[1m{model}\033[0m")
-        print(format_table(summaries))
+        print(format_table(summaries, compact=compact_flag))
         print()
 
     # Recent outputs breakdown
@@ -372,15 +429,28 @@ def main() -> int:
     if valid_spans and args.recent > 0:
         recent_count = min(args.recent, len(valid_spans))
         print(f"📋 Recent {recent_count} Generation Streams:")
+        term_cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+        is_narrow = (term_cols < 88 and not args.wide) or args.compact
+
         for s in valid_spans[-recent_count:]:
             dt = datetime.fromtimestamp(s.ended_at, tz=timezone.utc).astimezone()
-            t_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-            print(
-                f"  [{t_str}] {s.model:<18} : "
-                f"\033[1;32m{s.tps:6.1f} TPS\033[0m  "
-                f"({s.tokens:5d} tokens in {s.duration:5.2f}s) "
-                f"[{s.timing_source}]"
-            )
+            if is_narrow:
+                t_str = dt.strftime("%H:%M:%S")
+                m_str = s.model[:14]
+                print(
+                    f"  [{t_str}] {m_str:<14} : "
+                    f"\033[1;32m{s.tps:5.1f} TPS\033[0m "
+                    f"({s.tokens} tok in {s.duration:.1f}s) "
+                    f"[{s.timing_source}]"
+                )
+            else:
+                t_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                print(
+                    f"  [{t_str}] {s.model:<18} : "
+                    f"\033[1;32m{s.tps:6.1f} TPS\033[0m  "
+                    f"({s.tokens:5d} tokens in {s.duration:5.2f}s) "
+                    f"[{s.timing_source}]"
+                )
         print()
 
     return 0
