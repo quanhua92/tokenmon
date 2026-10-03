@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Type
 
 from llm_monitor.adapters.base import BaseAdapter
+from llm_monitor.adapters.claude import ClaudeAdapter
 from llm_monitor.adapters.codex import CodexAdapter
 
 ADAPTER_REGISTRY: dict[str, Type[BaseAdapter]] = {
     "codex": CodexAdapter,
-    # Future: "claude": ClaudeCodeAdapter
+    "claude": ClaudeAdapter,
 }
 
 

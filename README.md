@@ -12,7 +12,8 @@ Built from first principles to isolate true model generation speed from tool exe
 - **Zero Third-Party Dependencies**: Pure Python 3 standard library (`sqlite3`, `json`, `pathlib`, `re`, `argparse`, `statistics`, `dataclasses`). Runs instantly anywhere.
 - **Strictly Read-Only**: Connects to SQLite databases with `?mode=ro` and executes `PRAGMA query_only = ON`. Never writes to or locks your agent logs.
 - **Mathematically Sound Aggregation**: Calculates true **Weighted Throughput** ($\frac{\sum \text{tokens}}{\sum \text{duration}}$), median speed, and min-max distribution across rolling time windows (`30m`, `1d`, `7d`, `all`).
-- **Extensible Adapter Architecture**: Native support for **Codex** today, and designed to cleanly plug in **Claude Code** and other coding assistants tomorrow.
+- **Multi-Agent Adapters**: Native support for **Codex** (`~/.codex`) and **Claude Code** (`~/.claude/projects/`).
+- **Session Timelines & Unattended Detection**: Chronological inspection of user prompts, thinking blocks, assistant answers, and tool executions.
 - **Machine-Readable**: Includes `--json` mode for easy piping into `jq`, automated alerts, or reporting dashboards.
 
 ---
@@ -107,11 +108,13 @@ Inside the shell:
 
 ### Target a Specific Agent or Custom Data Path
 ```bash
-# Explicitly target codex
+# Target Codex specifically
 uv run llm-monitor codex
+uv run llm-monitor codex --home ~/.codex
 
-# Target a custom data directory
-uv run llm-monitor codex --home /custom/path/to/.codex
+# Target Claude Code specifically
+uv run llm-monitor claude
+uv run llm-monitor claude --home ~/.claude
 ```
 
 ### JSON Output

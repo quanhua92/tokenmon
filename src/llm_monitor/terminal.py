@@ -204,7 +204,7 @@ Alias: cls"""
         """Show active and available agent adapters."""
         print("\nSupported Adapters:")
         active = {a.name for a in self.adapters}
-        for name in ["codex"]:
+        for name in sorted(ADAPTER_REGISTRY.keys()):
             status = "\033[1;32m[Active]\033[0m" if name in active else "\033[2m[Inactive]\033[0m"
             print(f"  • {name:<12} {status}")
         print()
