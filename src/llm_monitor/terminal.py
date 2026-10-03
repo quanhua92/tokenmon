@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from llm_monitor import __version__
 from llm_monitor.adapters import BaseAdapter, detect_available_adapters, get_adapter
 from llm_monitor.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
-from llm_monitor.cli import format_recent_span, format_sessions_table, format_table, format_timeline_view
+from llm_monitor.cli import ASCII_LOGO, format_recent_span, format_sessions_table, format_table, format_timeline_view
 from llm_monitor.models import GenerationSpan, SessionTimeline
 
 
@@ -20,7 +20,8 @@ class MonitorShell(cmd.Cmd):
     """Interactive command-line shell for llm-monitor using Python standard library cmd."""
 
     intro = (
-        f"\n\033[1;36m⚡ llm-monitor interactive shell v{__version__}\033[0m\n"
+        f"\n\033[1;32m{ASCII_LOGO}\033[0m\n\n"
+        f"\033[1;32m⚡ llm-monitor interactive shell v{__version__}\033[0m\n"
         "Type \033[1mhelp\033[0m or \033[1m?\033[0m to list commands, or \033[1mexit\033[0m to quit.\n"
         "Tab-completion is enabled for commands and session IDs.\n"
     )
@@ -36,7 +37,10 @@ class MonitorShell(cmd.Cmd):
     def _get_spans(self, max_sessions: int = 64, min_timestamp: float | None = None) -> list[GenerationSpan]:
         all_spans = []
         for a in self.adapters:
-            all_spans.extend(a.collect(max_sessions=max_sessions, min_timestamp=min_timestamp))
+            try:
+                all_spans.extend(a.collect(max_sessions=max_sessions, min_timestamp=min_timestamp))
+            except Exception as e:
+                print(f"Warning: Adapter '{a.name}' failed to collect spans: {e}", file=sys.stderr)
         all_spans.sort(key=lambda s: s.ended_at)
         return all_spans
 
@@ -46,7 +50,10 @@ class MonitorShell(cmd.Cmd):
             return self._cached_timelines
         timelines = []
         for a in self.adapters:
-            timelines.extend(a.collect_sessions(max_sessions=max_sessions, min_timestamp=min_timestamp))
+            try:
+                timelines.extend(a.collect_sessions(max_sessions=max_sessions, min_timestamp=min_timestamp))
+            except Exception as e:
+                print(f"Warning: Adapter '{a.name}' failed to collect sessions: {e}", file=sys.stderr)
         timelines.sort(key=lambda t: t.updated_at, reverse=True)
         self._cached_timelines = timelines
         self._last_refresh = now

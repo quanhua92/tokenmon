@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -13,17 +14,22 @@ from pathlib import Path
 from llm_monitor.adapters.base import BaseAdapter
 from llm_monitor.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
 
+logger = logging.getLogger(__name__)
+
 
 def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
     res = 0
     shift = 0
-    while True:
+    limit = len(data)
+    while offset < limit:
         b = data[offset]
         offset += 1
         res |= (b & 0x7F) << shift
         if not (b & 0x80):
-            break
+            return res, offset
         shift += 7
+        if shift > 64:
+            break
     return res, offset
 
 
@@ -31,28 +37,31 @@ def parse_proto_fields(data: bytes) -> list[tuple[int, str, int | bytes | None]]
     offset = 0
     fields: list[tuple[int, str, int | bytes | None]] = []
     limit = len(data)
-    while offset < limit:
-        tag_byte, offset = decode_varint(data, offset)
-        field_num = tag_byte >> 3
-        wire_type = tag_byte & 7
-        if wire_type == 0:  # varint
-            val, offset = decode_varint(data, offset)
-            fields.append((field_num, "varint", val))
-        elif wire_type == 2:  # length-delimited
-            length, offset = decode_varint(data, offset)
-            val = data[offset : offset + length]
-            offset += length
-            fields.append((field_num, "bytes", val))
-        elif wire_type == 1:  # 64-bit
-            val = data[offset : offset + 8]
-            offset += 8
-            fields.append((field_num, "fixed64", val))
-        elif wire_type == 5:  # 32-bit
-            val = data[offset : offset + 4]
-            offset += 4
-            fields.append((field_num, "fixed32", val))
-        else:
-            break
+    try:
+        while offset < limit:
+            tag_byte, offset = decode_varint(data, offset)
+            field_num = tag_byte >> 3
+            wire_type = tag_byte & 7
+            if wire_type == 0:  # varint
+                val, offset = decode_varint(data, offset)
+                fields.append((field_num, "varint", val))
+            elif wire_type == 2:  # length-delimited
+                length, offset = decode_varint(data, offset)
+                val = data[offset : offset + length]
+                offset += length
+                fields.append((field_num, "bytes", val))
+            elif wire_type == 1:  # 64-bit
+                val = data[offset : offset + 8]
+                offset += 8
+                fields.append((field_num, "fixed64", val))
+            elif wire_type == 5:  # 32-bit
+                val = data[offset : offset + 4]
+                offset += 4
+                fields.append((field_num, "fixed32", val))
+            else:
+                break
+    except Exception as e:
+        logger.debug("Antigravity: error parsing proto fields: %s", e)
     return fields
 
 
@@ -258,7 +267,8 @@ class AntigravityAdapter(BaseAdapter):
                         )
                         if span is not None:
                             spans.append(span)
-            except Exception:
+            except Exception as e:
+                logger.error("AntigravityAdapter: error parsing session db '%s': %s", db_path, e)
                 continue
 
         spans.sort(key=lambda s: s.ended_at)
@@ -269,9 +279,13 @@ class AntigravityAdapter(BaseAdapter):
         timelines: list[SessionTimeline] = []
 
         for p in dbs:
-            timeline = self.parse_session_timeline(p.stem)
-            if timeline.events:
-                timelines.append(timeline)
+            try:
+                timeline = self.parse_session_timeline(p.stem)
+                if timeline.events:
+                    timelines.append(timeline)
+            except Exception as e:
+                logger.error("AntigravityAdapter: error parsing session timeline '%s': %s", p, e)
+                continue
 
         timelines.sort(key=lambda t: t.updated_at, reverse=True)
         return timelines

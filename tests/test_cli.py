@@ -213,6 +213,78 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("Time (s)", res_wide.stdout)
         self.assertIn("Range", res_wide.stdout)
 
+    def test_cli_ascii_banner(self):
+        # Human mode should display the ASCII banner
+        cmd = [
+            "python3",
+            "-m",
+            "llm_monitor",
+            "stats",
+            "codex",
+            "--home",
+            str(self.root),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("M O N I T O R", res.stdout)
+        self.assertIn("Agent TPS", res.stdout)
+
+        # JSON mode must NOT output the ASCII banner (must be clean JSON)
+        cmd_json = [
+            "python3",
+            "-m",
+            "llm_monitor",
+            "stats",
+            "codex",
+            "--home",
+            str(self.root),
+            "--json",
+        ]
+        res_json = subprocess.run(cmd_json, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res_json.returncode, 0)
+        self.assertNotIn("M O N I T O R", res_json.stdout)
+        self.assertNotIn("Agent TPS", res_json.stdout)
+        # Verify valid JSON parse
+        parsed = json.loads(res_json.stdout)
+        self.assertIn("meta", parsed)
+
+    def test_cli_corrupted_session_handling(self):
+        # Create a corrupted / radically unparseable session file
+        sessions_dir = self.root / "sessions"
+        corrupted_file = sessions_dir / "corrupted_session.jsonl"
+        with corrupted_file.open("w") as f:
+            f.write("{\x00\xffCORRUPTED_NON_JSON_DATA\n")
+            f.write('{"type": "totally_unknown_schema", "payload": 12345}\n')
+            f.write("GARBAGE_UNPARSEABLE_BYTES\n")
+
+        # The CLI should not crash; it should log/skip corrupted file and parse valid session
+        cmd = [
+            "python3",
+            "-m",
+            "llm_monitor",
+            "stats",
+            "codex",
+            "--home",
+            str(self.root),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("gpt-5", res.stdout)
+
+        # Also test sessions command with corrupted file present
+        cmd_ps = [
+            "python3",
+            "-m",
+            "llm_monitor",
+            "ps",
+            "codex",
+            "--home",
+            str(self.root),
+        ]
+        res_ps = subprocess.run(cmd_ps, capture_output=True, text=True, env={"PYTHONPATH": "src"})
+        self.assertEqual(res_ps.returncode, 0)
+        self.assertIn("cli_test", res_ps.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

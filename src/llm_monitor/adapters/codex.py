@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
@@ -14,6 +15,8 @@ from pathlib import Path
 
 from llm_monitor.adapters.base import BaseAdapter
 from llm_monitor.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
+
+logger = logging.getLogger(__name__)
 
 
 def parse_timestamp(val: object) -> float | None:
@@ -95,8 +98,11 @@ class CodexAdapter(BaseAdapter):
 
         all_spans: list[GenerationSpan] = []
         for session_id, jsonl_path, default_model in sessions:
-            spans = self._parse_session_file(session_id, jsonl_path, default_model, item_starts, min_timestamp=min_timestamp)
-            all_spans.extend(spans)
+            try:
+                spans = self._parse_session_file(session_id, jsonl_path, default_model, item_starts, min_timestamp=min_timestamp)
+                all_spans.extend(spans)
+            except Exception as e:
+                logger.error("CodexAdapter: skipping unparseable session file '%s': %s", jsonl_path, e)
 
         all_spans.sort(key=lambda s: s.ended_at)
         return all_spans
@@ -388,9 +394,12 @@ class CodexAdapter(BaseAdapter):
         sessions = self._discover_sessions(max_sessions, min_timestamp=min_timestamp)
         timelines: list[SessionTimeline] = []
         for session_id, jsonl_path, default_model in sessions:
-            timeline = self._parse_session_timeline(session_id, jsonl_path, default_model)
-            if timeline.events:
-                timelines.append(timeline)
+            try:
+                timeline = self._parse_session_timeline(session_id, jsonl_path, default_model)
+                if timeline.events:
+                    timelines.append(timeline)
+            except Exception as e:
+                logger.error("CodexAdapter: skipping unparseable session timeline '%s': %s", jsonl_path, e)
 
         timelines.sort(key=lambda t: t.updated_at, reverse=True)
         return timelines

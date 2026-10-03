@@ -9,7 +9,10 @@ from llm_monitor.adapters.base import BaseAdapter
 from llm_monitor.adapters.claude import ClaudeAdapter
 from llm_monitor.adapters.codex import CodexAdapter
 
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 
 ADAPTER_REGISTRY: dict[str, Type[BaseAdapter]] = {
     "codex": CodexAdapter,
@@ -44,12 +47,18 @@ def detect_available_adapters(max_age_days: float = 30.0, **kwargs) -> list[Base
         if cls in seen_classes:
             continue
         seen_classes.add(cls)
-        instance = cls(**kwargs)
-        if instance.detect():
-            fallback.append(instance)
-            last_ts = instance.last_generation_timestamp()
-            if last_ts is not None:
-                detected_with_time.append((last_ts, instance))
+        try:
+            instance = cls(**kwargs)
+            if instance.detect():
+                fallback.append(instance)
+                try:
+                    last_ts = instance.last_generation_timestamp()
+                    if last_ts is not None:
+                        detected_with_time.append((last_ts, instance))
+                except Exception as e:
+                    logger.debug("Adapter '%s' error getting last generation timestamp: %s", instance.name, e)
+        except Exception as e:
+            logger.warning("Adapter error during detection: %s", e)
 
     if not detected_with_time:
         return fallback

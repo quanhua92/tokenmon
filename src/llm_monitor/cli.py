@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 import sys
 import time
@@ -13,6 +14,8 @@ from llm_monitor import __version__
 from llm_monitor.adapters import ADAPTER_REGISTRY, detect_available_adapters, get_adapter
 from llm_monitor.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
 from llm_monitor.models import GenerationSpan, SessionTimeline, WindowSummary
+
+logger = logging.getLogger(__name__)
 
 
 def format_table(summaries: list[WindowSummary], compact: bool | None = None) -> str:
@@ -251,6 +254,31 @@ def format_timeline_view(timeline: SessionTimeline, now: float) -> str:
         lines.append(f"  {t_str} │ {tag} │ {ev.summary}{dur_str}")
 
     return "\n".join(lines)
+
+
+ASCII_LOGO = r"""
+   __    __   __  ___
+  / /   / /  /  |/  /   M O N I T O R
+ / /___/ /__/ /|_/ /    ── ⚡ Agent TPS ──
+/_____/____/_/  /_/
+""".strip("\n")
+
+
+def print_banner(color: bool = True) -> None:
+    """Print a compact, modern ASCII banner suitable for standard and narrow split panes."""
+    lines = ASCII_LOGO.splitlines()
+    if color and sys.stdout.isatty():
+        green = "\033[1;32m"
+        reset = "\033[0m"
+        dim = "\033[2m"
+        print()
+        print(f"{green}{lines[0]}{reset}")
+        print(f"{green}{lines[1][:21]}{reset}\033[1m{lines[1][21:]}{reset}")
+        print(f"{green}{lines[2][:21]}{reset}{dim}{lines[2][21:]}{reset}")
+        print(f"{green}{lines[3]}{reset}")
+        print()
+    else:
+        print(f"\n{ASCII_LOGO}\n")
 
 
 def main() -> int:
@@ -522,11 +550,19 @@ def main() -> int:
         else:
             min_ts = now - (30 * 86400.0)
 
+    # Print ASCII banner in human terminal mode
+    if not getattr(args, "json", False):
+        print_banner()
+
     # Handle timeline command
     if cmd == "timeline":
         timelines = []
         for adapter in adapters:
-            timelines.extend(adapter.collect_sessions(max_sessions=args.tasks, min_timestamp=min_ts))
+            try:
+                timelines.extend(adapter.collect_sessions(max_sessions=args.tasks, min_timestamp=min_ts))
+            except Exception as e:
+                logger.error("Adapter '%s' error collecting sessions: %s", adapter.name, e)
+                print(f"Warning: Adapter '{adapter.name}' failed to parse sessions: {e}", file=sys.stderr)
         if not timelines:
             print("No sessions found to inspect timeline.", file=sys.stderr)
             return 1
@@ -598,7 +634,11 @@ def main() -> int:
     if cmd == "sessions":
         timelines = []
         for adapter in adapters:
-            timelines.extend(adapter.collect_sessions(max_sessions=args.tasks, min_timestamp=min_ts))
+            try:
+                timelines.extend(adapter.collect_sessions(max_sessions=args.tasks, min_timestamp=min_ts))
+            except Exception as e:
+                logger.error("Adapter '%s' error collecting sessions: %s", adapter.name, e)
+                print(f"Warning: Adapter '{adapter.name}' failed to parse sessions: {e}", file=sys.stderr)
 
         if args.json:
             out = [
@@ -633,7 +673,11 @@ def main() -> int:
     # Default Mode: Collect spans for throughput / TPS monitoring
     all_spans: list[GenerationSpan] = []
     for adapter in adapters:
-        all_spans.extend(adapter.collect(max_sessions=args.tasks, min_timestamp=min_ts))
+        try:
+            all_spans.extend(adapter.collect(max_sessions=args.tasks, min_timestamp=min_ts))
+        except Exception as e:
+            logger.error("Adapter '%s' error collecting generation spans: %s", adapter.name, e)
+            print(f"Warning: Adapter '{adapter.name}' failed to parse spans: {e}", file=sys.stderr)
 
     all_spans.sort(key=lambda s: s.ended_at)
     if args.window:
@@ -649,7 +693,10 @@ def main() -> int:
     # Collect recent sessions preview
     timelines: list[SessionTimeline] = []
     for adapter in adapters:
-        timelines.extend(adapter.collect_sessions(max_sessions=5))
+        try:
+            timelines.extend(adapter.collect_sessions(max_sessions=5))
+        except Exception as e:
+            logger.error("Adapter '%s' error collecting preview sessions: %s", adapter.name, e)
     timelines.sort(key=lambda t: t.updated_at, reverse=True)
 
     if args.json:

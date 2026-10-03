@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 from datetime import datetime
@@ -10,6 +11,8 @@ from pathlib import Path
 
 from llm_monitor.adapters.base import BaseAdapter
 from llm_monitor.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span
+
+logger = logging.getLogger(__name__)
 
 
 def parse_iso_timestamp(val: object) -> float | None:
@@ -72,9 +75,12 @@ class ClaudeAdapter(BaseAdapter):
         all_spans: list[GenerationSpan] = []
 
         for p in session_files:
-            session_id = p.stem
-            spans = self._parse_session_spans(session_id, p, min_timestamp=min_timestamp)
-            all_spans.extend(spans)
+            try:
+                session_id = p.stem
+                spans = self._parse_session_spans(session_id, p, min_timestamp=min_timestamp)
+                all_spans.extend(spans)
+            except Exception as e:
+                logger.error("ClaudeAdapter: skipping unparseable session file '%s': %s", p, e)
 
         all_spans.sort(key=lambda s: s.ended_at)
         return all_spans
@@ -173,9 +179,12 @@ class ClaudeAdapter(BaseAdapter):
         timelines: list[SessionTimeline] = []
 
         for p in session_files:
-            timeline = self._parse_session_timeline(p.stem, p)
-            if timeline.events:
-                timelines.append(timeline)
+            try:
+                timeline = self._parse_session_timeline(p.stem, p)
+                if timeline.events:
+                    timelines.append(timeline)
+            except Exception as e:
+                logger.error("ClaudeAdapter: skipping unparseable session timeline '%s': %s", p, e)
 
         timelines.sort(key=lambda t: t.updated_at, reverse=True)
         return timelines
