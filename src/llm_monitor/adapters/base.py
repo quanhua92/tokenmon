@@ -30,3 +30,10 @@ class BaseAdapter(ABC):
     def collect_sessions(self, max_sessions: int = 32) -> list[SessionTimeline]:
         """Read local sessions and return parsed timelines with user/assistant activity."""
         ...
+
+    def last_generation_timestamp(self, max_probe_sessions: int = 5) -> float | None:
+        """Return epoch timestamp of most recent generation span, or None."""
+        spans = self.collect(max_sessions=max_probe_sessions)
+        if spans:
+            return max(s.ended_at for s in spans)
+        return None

@@ -300,8 +300,13 @@ def main() -> int:
             print(f"Error: Unknown agent '{agent_target}'. Supported: {list(ADAPTER_REGISTRY.keys())}", file=sys.stderr)
             return 1
         adapters.append(target)
+    elif agent_target and agent_target.lower() == "all":
+        for cls in ADAPTER_REGISTRY.values():
+            inst = cls(root=args.home)
+            if inst.detect():
+                adapters.append(inst)
     else:
-        detected = detect_available_adapters(root=args.home)
+        detected = detect_available_adapters(max_age_days=30.0, root=args.home)
         if not detected:
             print(
                 "No local AI coding agent environments detected (e.g. ~/.codex). "
