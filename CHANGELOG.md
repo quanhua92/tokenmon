@@ -7,6 +7,8 @@
 - Add read-only Oh My Pi (`omp`) support for main and nested worker stats, sessions, timelines, watch, and pinned follow.
 - Measure OMP's recorded first-output window using duration minus TTFT; exclude unconfirmed timing, tool-first boundaries, and incomplete responses.
 - Preserve OMP historical settings and stable live identities, avoid inherited/task usage double-counting, and isolate malformed records and unreadable sources.
+- Add native Pi (`pi`) sessions, token totals, historical settings, timelines, watch, and pinned follow using a shared read-only Pi-family journal parser.
+- Keep Pi responses in exclusion counts without inventing generation timing or TPS; distinguish native Pi and OMP model-change schemas during discovery.
 
 ## [0.1.3] — 2026-10-04
 

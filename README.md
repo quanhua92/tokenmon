@@ -41,7 +41,7 @@ Expand a screenshot below. Click the image to view it at full size.
 - **Zero Extra Dependencies**: Runs on standard Python 3.10+ without installing third-party packages.
 - **Strictly Read-Only**: Safely opens local files and SQLite databases in read-only mode (`?mode=ro`). Never locks or changes your logs.
 - **Meaningful Averages**: Calculates true weighted speed ($\frac{\text{total tokens}}{\text{total time}}$), median speed, and min/max ranges over rolling time windows (`30m`, `1d`, `7d`, `30d`, `all`).
-- **Supports Popular Agents**: Auto-detects **Codex** (`~/.codex`), **Claude Code** (`~/.claude/projects/`), **Antigravity** (`~/.gemini/antigravity-cli`), and **Oh My Pi / OMP** (`~/.omp/agent/sessions/`).
+- **Supports Popular Agents**: Auto-detects **Codex** (`~/.codex`), **Claude Code** (`~/.claude/projects/`), **Antigravity** (`~/.gemini/antigravity-cli`), **Oh My Pi / OMP** (`~/.omp/agent/sessions/`), and **Pi** (`~/.pi/agent/sessions/`).
 - **Session Timelines**: Step-by-step history of user prompts, thinking, assistant responses, and tool calls.
 - **JSON Ready**: Add `--json` to pipe clean data into `jq` or external dashboards.
 
@@ -225,6 +225,36 @@ session activity stays available. Malformed records are skipped independently;
 an unreadable source does not discard other sessions, and follow retains its
 baseline through temporary source failures.
 
+### Pi (`pi`)
+
+Pi support reads native JSONL session journals for session activity, output-token
+totals, historical model/effort settings, and timelines. Pi does not need to be
+installed or running on the monitoring machine; existing or copied logs suffice.
+
+```bash
+tokenmon stats pi --all
+tokenmon ps pi --all
+tokenmon logs pi --all                    # latest Pi session
+tokenmon stats pi -w
+tokenmon logs <session-uuid> --agent pi -f --all
+tokenmon ps pi --home ~/.pi/agent --all --json
+```
+
+`--home` is the agent data directory containing `sessions`, not `~/.pi` itself.
+It overrides `PI_CODING_AGENT_DIR`; otherwise the native default is `~/.pi/agent`.
+OMP profiles, `PI_CONFIG_DIR`, and OMP's XDG migrations do not change Pi's default.
+Native model-change records keep provider and model ID separate. Recorded
+`providerThinkingLevel` takes precedence over response `thinkingLevel`, then
+inherited thinking-level settings. Missing tier/speed metadata remains unknown.
+
+**Native Pi journals do not record confirmed generation timing.** The response
+timestamp is not a first-token timestamp; journal completion minus request start
+is not decoding time. Responses remain in excluded-stream counts as
+`pi-unconfirmed`, with **no TPS estimate**. Session output-token totals remain
+available; throughput summaries count only valid measured streams. Assistant
+timeline events use the journal completion timestamp. Malformed records and
+unreadable sessions are isolated, and follow stays pinned through read failures.
+
 ### Active & Recent Sessions (`sessions`, `ps`, `ls`)
 
 See all recent sessions, message counts, tool runs, and idle status:
@@ -338,8 +368,9 @@ completion-time cutoffs without discarding earlier metadata context.
 
 For live follow, override `read_session(session_id)` to reopen a retained exact
 source, and give events stable internal `event_id` values that do not change with
-usage or timestamps. `OMPAdapter` in `src/tokenmon/adapters/omp.py` demonstrates
-this for nested JSONL sessions and recorded first-output timing.
+usage or timestamps. `OMPAdapter` and `PiAdapter` share
+`src/tokenmon/adapters/_pi_jsonl.py` for nested journals and pinned reads; their
+separate entry points preserve native roots and timing semantics.
 
 ---
 

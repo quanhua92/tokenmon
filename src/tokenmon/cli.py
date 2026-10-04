@@ -295,6 +295,7 @@ STATS_GUIDE = """\
 📖 How to read this
   • TPS uses recorded generation boundaries. Claude single-record turn-span estimates can include latency or waiting.
   • OMP omp-ttft uses the recorded first-output-item-to-completion window, not guaranteed first-text-token timing.
+  • Pi journals lack confirmed generation timing: session tokens remain visible, but Pi responses do not contribute TPS.
   • TPS in the table is total tokens ÷ total seconds, not an average of per-stream speeds.
   • Outputs "valid/total": streams under 1s or with unclear timing count in total but not in TPS.
   • Median is the middle stream. It is less affected by one very slow or very fast stream.

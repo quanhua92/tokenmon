@@ -16,6 +16,7 @@ from tokenmon.adapters.antigravity import AntigravityAdapter
 from tokenmon.adapters.claude import ClaudeAdapter
 from tokenmon.adapters.codex import CodexAdapter
 from tokenmon.adapters.omp import OMPAdapter
+from tokenmon.adapters.pi import PiAdapter
 from tokenmon.live import follow_session, watch_stats
 from tokenmon.models import SessionTimeline, TimelineEvent, create_span
 
@@ -426,6 +427,153 @@ class TestOMPLiveSources(unittest.TestCase):
         self.assertEqual(user_session.assistant_messages, 0)
         self.assertEqual(user_session.total_tokens, 0)
         self.assertEqual([span.session_id for span in adapter.collect()], ["main-id", "worker-id"])
+
+
+class TestPiLiveSources(unittest.TestCase):
+    """Refresh real Pi journals; only the polling clock is controlled."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.root = Path(self.temp_dir.name)
+        self.started_at = datetime(2026, 10, 3, 10, tzinfo=timezone.utc).timestamp()
+        self.path = self.root / "sessions" / "project" / "pi.jsonl"
+
+    def timestamp(self, offset):
+        return datetime.fromtimestamp(self.started_at + offset, timezone.utc).isoformat()
+
+    def write_records(self, path, records, mode="w"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open(mode, encoding="utf-8") as stream:
+            for record in records:
+                stream.write(json.dumps(record) + "\n")
+
+    def session_records(self, session_id, offset=0, assistant=True):
+        prefix = session_id + "-"
+        records = [
+            {"type": "session", "id": session_id, "timestamp": self.timestamp(offset),
+             "cwd": "/synthetic/pi-project"},
+            {"type": "model_change", "id": prefix + "model",
+             "provider": "openai", "modelId": "test-model"},
+            {"type": "thinking_level_change", "id": prefix + "effort",
+             "parentId": prefix + "model", "thinkingLevel": "high"},
+            {"type": "message", "id": prefix + "user", "parentId": prefix + "effort",
+             "timestamp": self.timestamp(offset + 1),
+             "message": {"role": "user", "content": "historical pi prompt",
+                         "timestamp": (self.started_at + offset + 1) * 1000}},
+        ]
+        if assistant:
+            records.append({
+                "type": "message", "id": prefix + "assistant", "parentId": prefix + "user",
+                "timestamp": self.timestamp(offset + 7),
+                "message": {"role": "assistant", "provider": "openai", "model": "test-model",
+                            "api": "openai-responses", "responseId": prefix + "response",
+                            "thinkingLevel": "low", "providerThinkingLevel": "medium",
+                            "content": [{"type": "text", "text": "historical pi answer"}],
+                            "timestamp": (self.started_at + offset + 2) * 1000,
+                            "usage": {"output": 80}, "stopReason": "stop"},
+            })
+        return records
+
+    def test_follow_equal_time_identities_stay_pinned_through_updates_and_read_failure(self):
+        records = self.session_records("pi-pinned-id")
+        self.write_records(self.path, records)
+        adapter = PiAdapter(self.root)
+        initial = adapter.collect_sessions(max_sessions=1)[0]
+        self.assertEqual(initial.session_id, "pi-pinned-id")
+        baseline_ids = {event.event_id for event in initial.events}
+        assistant = records[-1]
+        update = {
+            **assistant, "timestamp": self.timestamp(8),
+            "message": {**assistant["message"], "usage": {"output": 160},
+                        "providerThinkingLevel": "high"},
+        }
+        new_user = {
+            "type": "message", "id": "equal-user", "parentId": "pi-pinned-id-assistant",
+            "timestamp": self.timestamp(7),
+            "message": {"role": "user", "content": "equal-time-pi-prompt",
+                        "timestamp": (self.started_at + 7) * 1000},
+        }
+        new_tool = {
+            "type": "message", "id": "equal-tool", "parentId": "equal-user",
+            "timestamp": self.timestamp(7),
+            "message": {"role": "toolResult", "toolName": "restored-pi-tool",
+                        "toolCallId": "call", "content": [],
+                        "timestamp": (self.started_at + 7) * 1000},
+        }
+        hidden = self.path.with_suffix(".unavailable")
+        polls = 0
+        snapshots = []
+
+        def poll(_interval):
+            nonlocal polls
+            polls += 1
+            snapshots.append(output.getvalue())
+            if polls == 1:
+                self.write_records(self.path, [new_user], "a")
+            elif polls == 2:
+                self.write_records(self.path, [update], "a")
+                newer = self.path.with_name("newer.jsonl")
+                self.write_records(newer, self.session_records("pi-newer-id", 100))
+                os.utime(self.path, (100, 100))
+                os.utime(newer, (200, 200))
+            elif polls == 3:
+                self.path.rename(hidden)
+            elif polls == 4:
+                hidden.rename(self.path)
+                self.write_records(self.path, [new_tool], "a")
+                os.utime(self.path, (100, 100))
+            elif polls == 6:
+                raise KeyboardInterrupt
+
+        with patch("tokenmon.live.time.sleep", side_effect=poll), \
+                patch("sys.stdout", new=io.StringIO()) as output:
+            self.assertEqual(follow_session(adapter, initial, interval=0.01), 0)
+        text = output.getvalue()
+        self.assertEqual(text.count("Following session pi-pinned-id (pi)"), 1)
+        self.assertEqual(text.count("equal-time-pi-prompt"), 1)
+        self.assertEqual(text.count("restored-pi-tool"), 1)
+        self.assertIn("equal-time-pi-prompt", snapshots[1])
+        self.assertEqual(snapshots[1], snapshots[2], "metadata updates must not replay events")
+        self.assertEqual(snapshots[2], snapshots[3], "missing source must retain baseline")
+        for marker in ("historical pi prompt", "historical pi answer", "Assistant response",
+                       "pi-newer-id", "\033[2J"):
+            self.assertNotIn(marker, text)
+        self.assertEqual(adapter.collect_sessions(max_sessions=1)[0].session_id, "pi-newer-id")
+        refreshed = adapter.read_session("pi-pinned-id")
+        self.assertIsNotNone(refreshed)
+        self.assertTrue(baseline_ids.issubset({event.event_id for event in refreshed.events}))
+        self.assertEqual(refreshed.total_tokens, 160)
+        final_assistant = next(event for event in refreshed.events if event.kind == "assistant_message")
+        self.assertEqual(final_assistant.reasoning_effort, "high")
+        self.assertEqual(final_assistant.timestamp, self.started_at + 8)
+
+    def test_watch_shows_pi_and_user_only_cards_without_measurable_generation(self):
+        self.write_records(self.path, self.session_records("pi-response-id"))
+        self.write_records(self.path.with_name("user-only.jsonl"),
+                           self.session_records("pi-user-only-id", 10, assistant=False))
+        adapter = PiAdapter(self.root)
+        with patch("tokenmon.live.time.time", side_effect=[self.started_at + 30, self.started_at + 32]), \
+                patch("tokenmon.live.time.sleep", side_effect=[None, KeyboardInterrupt]), \
+                patch("sys.stdout", new=io.StringIO()) as output:
+            self.assertEqual(watch_stats([adapter], window="1d", recent=2, compact=False), 0)
+        text = output.getvalue()
+        self.assertEqual(text.count("Recent Sessions & User Interactions"), 2)
+        self.assertEqual(text.count("\033[1mpi-response-"), 2)
+        self.assertEqual(text.count("\033[1mpi-user-only"), 2)
+        self.assertNotIn("Recent 1 Generation Streams", text)
+        self.assertNotIn("80.0 TPS", text)
+        self.assertIn("Exited watch mode", text)
+        spans = adapter.collect()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].tokens, 80)
+        self.assertIsNone(spans[0].tps)
+        self.assertEqual(spans[0].timing_source, "pi-unconfirmed")
+        self.assertEqual(spans[0].note, "unconfirmed_generation_timing")
+        user_session = adapter.read_session("pi-user-only-id")
+        self.assertEqual(user_session.user_messages, 1)
+        self.assertEqual(user_session.assistant_messages, 0)
+        self.assertEqual(user_session.total_tokens, 0)
 
 
 if __name__ == "__main__":

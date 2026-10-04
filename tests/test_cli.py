@@ -777,5 +777,149 @@ class TestOMPCLIIntegration(unittest.TestCase):
                     process.communicate(timeout=5)
 
 
+class TestPiCLIIntegration(unittest.TestCase):
+    """Use native Pi journals through the real public commands."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.root = Path(self.temp_dir.name)
+        self.started_at = datetime(2026, 10, 3, 10, tzinfo=timezone.utc).timestamp()
+        self.path = self.root / "sessions" / "project" / "pi.jsonl"
+        self.path.parent.mkdir(parents=True)
+        self.records = [
+            {"type": "session", "version": 3, "id": "pi-native-id",
+             "timestamp": self.timestamp(0), "cwd": "/synthetic/pi-project"},
+            {"type": "model_change", "id": "model", "provider": "openai",
+             "modelId": "test-model"},
+            {"type": "thinking_level_change", "id": "effort", "parentId": "model",
+             "thinkingLevel": "high"},
+            {"type": "message", "id": "user", "parentId": "effort",
+             "timestamp": self.timestamp(1),
+             "message": {"role": "user", "content": "synthetic pi prompt",
+                         "timestamp": (self.started_at + 1) * 1000}},
+            {"type": "message", "id": "assistant", "parentId": "user",
+             "timestamp": self.timestamp(9),
+             "message": {"role": "assistant", "provider": "openai", "model": "test-model",
+                         "api": "openai-responses", "responseId": "pi-response",
+                         "thinkingLevel": "low", "providerThinkingLevel": "medium",
+                         "content": [{"type": "text", "text": "synthetic pi answer"},
+                                     {"type": "thinking", "thinking": "synthetic reasoning"},
+                                     {"type": "toolCall", "id": "tool", "name": "synthetic-read",
+                                      "arguments": {}}],
+                         "usage": {"output": 120}, "stopReason": "toolUse",
+                         "timestamp": (self.started_at + 2) * 1000}},
+        ]
+        self.path.write_text("".join(json.dumps(record) + "\n" for record in self.records),
+                             encoding="utf-8")
+        self.env = os.environ.copy()
+        self.env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        self.env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    def timestamp(self, offset):
+        return datetime.fromtimestamp(self.started_at + offset, timezone.utc).isoformat()
+
+    def run_cli(self, arguments):
+        result = subprocess.run(
+            [sys.executable, "-m", "tokenmon", *arguments, "--home", str(self.root)],
+            capture_output=True, text=True, env=self.env, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        return json.loads(result.stdout)
+
+    def assert_metadata(self, value):
+        self.assertEqual(value["reasoning_effort"], "medium")
+        for field in ("service_tier", "speed", "speed_mode"):
+            self.assertIsNone(value[field])
+
+    def test_stats_preserves_activity_without_inventing_measured_throughput(self):
+        data = self.run_cli(["stats", "pi", "--all", "--json"])
+        self.assertEqual(set(data), {"meta", "summary", "models", "recent_streams", "recent_sessions"})
+        self.assertEqual(data["meta"]["agents"], ["pi"])
+        self.assertEqual(data["meta"]["inspected_spans"], 1)
+        summary = data["summary"]["all"]
+        self.assertEqual(summary["total_spans"], 1)
+        self.assertEqual(summary["valid_spans"], 0)
+        self.assertEqual(summary["excluded_spans"], 1)
+        self.assertEqual(summary["total_tokens"], 0)
+        self.assertEqual(summary["total_duration_seconds"], 0)
+        for field in ("weighted_tps", "median_tps", "min_tps", "max_tps"):
+            self.assertIsNone(summary[field])
+        self.assertEqual(summary["configurations"], [])
+        self.assertIsNone(summary["reasoning_effort"])
+        self.assertEqual(data["models"]["openai/test-model"]["all"], summary)
+        self.assertEqual(data["recent_streams"], [])
+        self.assertEqual(len(data["recent_sessions"]), 1)
+        session = data["recent_sessions"][0]
+        self.assertEqual(session["agent"], "pi")
+        self.assertEqual(session["total_tokens"], 120)
+        self.assert_metadata(session)
+        self.assertNotIn("event_id", json.dumps(data))
+        bare = self.run_cli(["pi", "--all", "--json"])
+        self.assertEqual(bare["summary"], data["summary"])
+        self.assertEqual(bare["models"], data["models"])
+
+    def test_ps_logs_latest_and_prefix_keep_native_session_totals_and_metadata(self):
+        sessions = self.run_cli(["ps", "pi", "--all", "--json"])
+        self.assertEqual(len(sessions), 1)
+        session = sessions[0]
+        self.assertEqual(session["session_id"], "pi-native-id")
+        self.assertEqual(session["agent"], "pi")
+        self.assertEqual(session["cwd"], "/synthetic/pi-project")
+        self.assertEqual(session["model"], "openai/test-model")
+        self.assertEqual(session["total_tokens"], 120)
+        self.assertEqual(session["duration_seconds"], 8)
+        self.assert_metadata(session)
+        for target in ("pi", "latest", "pi-native"):
+            with self.subTest(target=target):
+                arguments = ["logs", target, "--all", "--json"]
+                if target != "pi":
+                    arguments += ["--agent", "pi"]
+                timeline = self.run_cli(arguments)
+                self.assertEqual(timeline["session_id"], "pi-native-id")
+                self.assertEqual(timeline["agent"], "pi")
+                self.assertEqual(timeline["total_tokens"], 120)
+                self.assertEqual(timeline["assistant_messages"], 1)
+                self.assertEqual(timeline["user_messages"], 1)
+                self.assertEqual(timeline["tool_calls"], 1)
+                self.assert_metadata(timeline)
+                self.assertEqual(sum(event["tokens"] or 0 for event in timeline["events"]), 120)
+                assistant = next(event for event in timeline["events"]
+                                 if event["kind"] == "assistant_message")
+                self.assertEqual(assistant["timestamp"], self.started_at + 9)
+                self.assertIsNone(assistant["duration"])
+                self.assert_metadata(assistant)
+                self.assertNotIn("event_id", json.dumps(timeline))
+
+    def test_all_sources_does_not_cross_parse_pi_and_omp_native_models(self):
+        omp_records = [
+            {"type": "session", "id": "omp-native-id", "timestamp": self.timestamp(20)},
+            {"type": "model_change", "id": "omp-model", "model": "openai/omp-test"},
+            {"type": "message", "id": "omp-response", "parentId": "omp-model",
+             "timestamp": self.timestamp(27),
+             "message": {"role": "assistant", "provider": "openai", "model": "omp-test",
+                         "content": [{"type": "text", "text": "synthetic omp answer"}],
+                         "usage": {"output": 80}, "stopReason": "stop",
+                         "timestamp": (self.started_at + 22) * 1000,
+                         "completedAt": (self.started_at + 27) * 1000,
+                         "duration": 5000, "ttft": 1000}},
+        ]
+        self.path.with_name("omp.jsonl").write_text(
+            "".join(json.dumps(record) + "\n" for record in omp_records), encoding="utf-8")
+        data = self.run_cli(["stats", "all", "--all", "--json"])
+        summary = data["summary"]["all"]
+        self.assertEqual(data["meta"]["inspected_spans"], 2)
+        self.assertEqual(summary["total_spans"], 2)
+        self.assertEqual(summary["valid_spans"], 1)
+        self.assertEqual(summary["excluded_spans"], 1)
+        self.assertEqual(summary["total_tokens"], 80)
+        self.assertEqual(summary["weighted_tps"], 20)
+        sessions = self.run_cli(["ps", "all", "--all", "--json"])
+        self.assertEqual({(session["agent"], session["session_id"], session["total_tokens"])
+                          for session in sessions},
+                         {("pi", "pi-native-id", 120), ("omp", "omp-native-id", 80)})
+        self.assertEqual(len(sessions), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
