@@ -9,7 +9,12 @@ from pathlib import Path
 from contextlib import closing
 
 from tokenmon.adapters.codex import CodexAdapter
-from tokenmon.analyzer import analyze_windows, filter_by_window, summarize_spans
+from tokenmon.analyzer import (
+    analyze_agent_model_windows,
+    analyze_windows,
+    filter_by_window,
+    summarize_spans,
+)
 from tokenmon.models import GenerationSpan
 
 
@@ -53,6 +58,17 @@ class TestModelsAndAnalyzer(unittest.TestCase):
         self.assertEqual(summary.total_tokens, 200)
         self.assertAlmostEqual(summary.total_duration, 10.0)
         self.assertAlmostEqual(summary.median_tps, 55.555555, places=3)
+
+    def test_agent_model_analysis_does_not_blend_sources(self):
+        codex = GenerationSpan("codex", "s1", "t1", "shared", 100, 10.0, 12.0)
+        claude = GenerationSpan("claude", "s2", "t2", "shared", 90, 20.0, 23.0)
+
+        by_source = analyze_agent_model_windows([codex, claude], ["all"], now=30.0)
+
+        self.assertEqual(list(by_source), [("claude", "shared"), ("codex", "shared")])
+        self.assertEqual(by_source[("claude", "shared")][0].weighted_tps, 30.0)
+        self.assertEqual(by_source[("codex", "shared")][0].weighted_tps, 50.0)
+        self.assertEqual(analyze_windows([codex, claude], ["all"], now=30.0)["shared"][0].weighted_tps, 38.0)
 
 
 class TestCodexAdapter(unittest.TestCase):

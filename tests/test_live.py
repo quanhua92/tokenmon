@@ -68,6 +68,11 @@ class TestLiveModes(unittest.TestCase):
         self.assertEqual(text.count("Recent Sessions & User Interactions"), 2)
         self.assertIn("60.0 TPS", text)
         self.assertIn("│ 1d", text)
+        first_snapshot = text[:text.index("⚡ TokenMon Live Dashboard", 1)]
+        self.assertLess(first_snapshot.index("⚡ TokenMon Live Dashboard"),
+                        first_snapshot.index("📖 How to read this"))
+        self.assertLess(first_snapshot.index("📖 How to read this"),
+                        first_snapshot.index("⚡ TokenMon v"))
         self.assertNotIn("\033[2J", text)
         self.assertEqual(adapter.collect.call_args_list, [
             call(max_sessions=7, min_timestamp=13600),

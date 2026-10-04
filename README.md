@@ -115,6 +115,8 @@ metrics, recent streams, and session cards; redirected output appends snapshots.
 
 - **Weighted TPS** = valid tokens ÷ valid generation seconds. Median and range use
   individual valid streams.
+- Human tables separate each source agent and model pair; JSON keeps its stable
+  model-keyed aggregation.
 - Total generation time sums overlapping streams separately; human output uses
   hours/minutes/seconds, while JSON keeps numeric seconds.
 - Streams under one second, above 400 TPS, or with unconfirmed timing are excluded.

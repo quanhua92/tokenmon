@@ -69,6 +69,7 @@ class TestTerminalShell(unittest.TestCase):
             self.shell.do_summary("all")
             output = fake_out.getvalue()
             self.assertIn("gpt-5", output)
+            self.assertIn("[Agent: codex]", output)
             self.assertIn("60.0", output)
 
     def test_shell_sessions_command(self):
@@ -203,6 +204,7 @@ class TestTerminalShell(unittest.TestCase):
         self.assertIn("Recent 1 Generation Streams", output.getvalue())
         self.assertIn("Recent Sessions & User Interactions", output.getvalue())
         self.assertIn("60.0 TPS", output.getvalue())
+        self.assertNotIn("How to read this", output.getvalue())
         self.assertIn("Exited watch mode", output.getvalue())
         collect.assert_called_once_with(max_sessions=64, min_timestamp=13600)
 

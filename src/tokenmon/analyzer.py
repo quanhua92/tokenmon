@@ -93,3 +93,30 @@ def analyze_windows(
         results[model] = model_summaries
 
     return results
+
+
+def analyze_agent_model_windows(
+    spans: list[GenerationSpan],
+    window_names: list[str] | None = None,
+    now: float | None = None,
+) -> dict[tuple[str, str], list[WindowSummary]]:
+    """Generate window summaries grouped by source agent and model name."""
+    current_time = now if now is not None else time.time()
+    windows = window_names or ["30m", "1d", "7d", "all"]
+
+    grouped: dict[tuple[str, str], list[GenerationSpan]] = defaultdict(list)
+    for span in spans:
+        grouped[(span.agent, span.model)].append(span)
+
+    results: dict[tuple[str, str], list[WindowSummary]] = {}
+    for agent_model, grouped_spans in sorted(grouped.items(), key=lambda item: (item[0][1], item[0][0])):
+        _, model = agent_model
+        results[agent_model] = [
+            summarize_spans(
+                filter_by_window(grouped_spans, WINDOW_DURATIONS.get(window, float("inf")), current_time),
+                window,
+                model,
+            )
+            for window in windows
+        ]
+    return results

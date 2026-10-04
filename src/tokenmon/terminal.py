@@ -10,7 +10,7 @@ import time
 
 from tokenmon import __version__
 from tokenmon.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
-from tokenmon.analyzer import WINDOW_DURATIONS, analyze_windows
+from tokenmon.analyzer import WINDOW_DURATIONS, analyze_agent_model_windows
 from tokenmon.cli import ASCII_LOGO, format_recent_span, format_sessions_table, format_table, format_timeline_view
 from tokenmon.models import GenerationSpan, SessionTimeline
 
@@ -83,10 +83,10 @@ Alias: s"""
             print("No output streams found.")
             return
 
-        analysis = analyze_windows(spans, window_names=windows, now=time.time())
+        analysis = analyze_agent_model_windows(spans, window_names=windows, now=time.time())
 
-        for model, summaries in analysis.items():
-            print(f"\n🤖 Model: \033[1m{model}\033[0m")
+        for (agent, model), summaries in analysis.items():
+            print(f"\n🤖 Model: \033[1m{model}\033[0m [Agent: {agent}]")
             print(format_table(summaries))
         print()
 

@@ -13,7 +13,13 @@ from datetime import datetime, timezone
 
 from tokenmon import __version__
 from tokenmon.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
-from tokenmon.analyzer import WINDOW_DURATIONS, analyze_windows, filter_by_window, summarize_spans
+from tokenmon.analyzer import (
+    WINDOW_DURATIONS,
+    analyze_agent_model_windows,
+    analyze_windows,
+    filter_by_window,
+    summarize_spans,
+)
 from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, WindowSummary, recorded_speed_mode, format_session_duration
 
 logger = logging.getLogger(__name__)
@@ -293,16 +299,10 @@ ASCII_LOGO = r"""
 
 STATS_GUIDE = """\
 📖 How to read this
-  • TPS uses recorded generation boundaries. Claude single-record turn-span estimates can include latency or waiting.
-  • OMP omp-ttft uses the recorded first-output-item-to-completion window, not guaranteed first-text-token timing.
-  • Pi journals lack confirmed generation timing: session tokens remain visible, but Pi responses do not contribute TPS.
-  • OpenCode native v1/v2 timing is unconfirmed; v2 time.streamed is a stream end, not TTFT. Session tokens remain visible.
-  • TPS in the table is total tokens ÷ total seconds, not an average of per-stream speeds.
-  • Outputs "valid/total": streams under 1s or with unclear timing count in total but not in TPS.
-  • Median is the middle stream. It is less affected by one very slow or very fast stream.
-  • Windows are 30m, 1d, 7d and 30d. Use --window to pick one, or --all for full history.
-
-➡️  Next: `tokenmon ps` lists sessions · `tokenmon logs` shows a timeline · add --json for scripts.
+  • TPS = valid output tokens ÷ summed generation time (overlaps add separately); Median = the middle stream.
+  • Outputs = valid/total; streams under 1s or with uncertain timing are excluded from TPS.
+  • Timing: Claude turn-span may include latency; OMP starts at the first output item; Pi/OpenCode session tokens do not contribute TPS.
+  • Windows: 30m, 1d, 7d, 30d, all · Next: `tokenmon ps` for sessions · `tokenmon logs` for timelines · `--json` for scripts.
 """
 
 
@@ -358,12 +358,15 @@ def print_stats_dashboard(adapters: list[BaseAdapter], spans: list[GenerationSpa
                           tasks: int = 64, recent: int = 10,
                           compact: bool | None = None, guide: bool = True) -> None:
     active_names = ", ".join(a.name for a in adapters)
+    if guide:
+        print(STATS_GUIDE)
     print(f"\n⚡ TokenMon v{__version__} [Agents: {active_names}]")
     print(f"📊 Inspected: {len(spans)} output streams across up to {tasks} sessions\n")
     if not spans:
         print("No generation output streams found in the inspected sessions.")
-    for model, summaries in analyze_windows(spans, window_names=windows, now=now).items():
-        print(f"🤖 Model: \033[1m{model}\033[0m")
+    for (agent, model), summaries in analyze_agent_model_windows(
+            spans, window_names=windows, now=now).items():
+        print(f"🤖 Model: \033[1m{model}\033[0m [Agent: {agent}]")
         print(format_table(summaries, compact=compact))
         print()
     valid_spans = [s for s in spans if s.tps is not None]
@@ -381,8 +384,6 @@ def print_stats_dashboard(adapters: list[BaseAdapter], spans: list[GenerationSpa
             print()
         latest_id = timelines[0].session_id[:12]
         print(f"💡 Tip: Run `tokenmon timeline {latest_id}` for full step-by-step chronology.\n")
-    if guide:
-        print(STATS_GUIDE)
 
 
 def positive_interval(value: str) -> float:

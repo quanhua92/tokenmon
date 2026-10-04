@@ -17,7 +17,17 @@ from pathlib import Path
 from itertools import product
 from unittest.mock import Mock, patch
 
-from tokenmon.cli import configuration_metadata, format_recent_span, format_session_duration, format_sessions_table, format_session_card, format_timeline_view, format_table, main
+from tokenmon.cli import (
+    configuration_metadata,
+    format_recent_span,
+    format_session_duration,
+    format_sessions_table,
+    format_session_card,
+    format_timeline_view,
+    format_table,
+    main,
+    print_stats_dashboard,
+)
 from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, WindowSummary
 
 
@@ -569,6 +579,10 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertEqual(res.returncode, 0)
         self.assertIn("TokenMon", res.stdout)
         self.assertIn("Agent TPS", res.stdout)
+        self.assertLess(res.stdout.index("TokenMon · Agent TPS"), res.stdout.index("📖 How to read this"))
+        self.assertLess(res.stdout.index("📖 How to read this"), res.stdout.index("⚡ TokenMon v"))
+        self.assertLess(res.stdout.index("📖 How to read this"), res.stdout.index("🤖 Model:"))
+        self.assertIn("[Agent: codex]", res.stdout)
 
         # JSON mode must NOT output the ASCII banner (must be clean JSON)
         cmd_json = [
@@ -588,6 +602,24 @@ class TestCLIIntegration(unittest.TestCase):
         # Verify valid JSON parse
         parsed = json.loads(res_json.stdout)
         self.assertIn("meta", parsed)
+
+    def test_human_stats_split_shared_models_by_source_agent(self):
+        spans = [
+            GenerationSpan("codex", "s1", "t1", "shared", 100, 10.0, 12.0),
+            GenerationSpan("claude", "s2", "t2", "shared", 90, 20.0, 23.0),
+        ]
+        adapters = [Mock(name="codex"), Mock(name="claude")]
+        adapters[0].name = "codex"
+        adapters[1].name = "claude"
+        with patch("sys.stdout", new=io.StringIO()) as output:
+            print_stats_dashboard(adapters, spans, [], ["all"], 30.0,
+                                  recent=0, compact=True, guide=False)
+        text = output.getvalue()
+        self.assertEqual(text.count("🤖 Model:"), 2)
+        self.assertIn("🤖 Model: \033[1mshared\033[0m [Agent: claude]", text)
+        self.assertIn("🤖 Model: \033[1mshared\033[0m [Agent: codex]", text)
+        self.assertIn("30.0", text)
+        self.assertIn("50.0", text)
 
     def test_cli_corrupted_session_handling(self):
         # Create a corrupted / radically unparseable session file
