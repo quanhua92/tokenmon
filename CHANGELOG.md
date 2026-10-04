@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.4] — 2026-10-04
 
 - Format session Status idle times as hours, minutes, and seconds across session lists, cards, and timelines; include days for durations of 24 hours or more.
 - Use the shared duration format for recent session cards, including seconds and days when applicable.
@@ -54,6 +54,7 @@ Initial public release of TokenMon.
 - Read agent logs and SQLite databases without modifying them.
 - Add CI checks and manual PyPI trusted publishing.
 
+[0.1.4]: https://github.com/quanhua92/tokenmon/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/quanhua92/tokenmon/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/quanhua92/tokenmon/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/quanhua92/tokenmon/compare/v0.1.0...v0.1.1
