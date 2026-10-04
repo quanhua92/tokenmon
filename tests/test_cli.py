@@ -2,6 +2,7 @@
 
 import json
 import io
+import os
 import select
 import signal
 import subprocess
@@ -544,6 +545,236 @@ class TestCLIIntegration(unittest.TestCase):
         res_ps = subprocess.run(cmd_ps, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res_ps.returncode, 0)
         self.assertIn("cli_test", res_ps.stdout)
+
+
+class TestOMPCLIIntegration(unittest.TestCase):
+    """Exercise OMP through the public CLI with isolated synthetic journals."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.root = Path(self.temp_dir.name)
+        self.started_at = datetime(2026, 10, 3, 10, tzinfo=timezone.utc).timestamp()
+        self.main_path = self.root / "sessions" / "project" / "main.jsonl"
+        self.worker_path = self.main_path.parent / "main.artifacts" / "scout.jsonl"
+        self.write_records(self.main_path, self.session_records("main-id", 0, 120, tools=True))
+        self.write_records(self.worker_path, self.session_records("worker-id", 20, 80))
+        self.env = os.environ.copy()
+        self.env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        self.env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    def timestamp(self, offset):
+        return datetime.fromtimestamp(self.started_at + offset, timezone.utc).isoformat()
+
+    def write_records(self, path, records, mode="w"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open(mode, encoding="utf-8") as stream:
+            for record in records:
+                stream.write(json.dumps(record) + "\n")
+
+    def session_records(self, session_id, offset, tokens, tools=False):
+        prefix = session_id + "-"
+        header = {"type": "session", "version": 3, "id": session_id,
+                  "timestamp": self.timestamp(offset), "cwd": "/synthetic/omp-project"}
+        if session_id == "worker-id":
+            header["parentSession"] = "main-id"
+        content = [{"type": "text", "text": "synthetic response"}]
+        if tools:
+            content += [{"type": "thinking", "thinking": "synthetic reasoning"},
+                        {"type": "toolCall", "id": "read-1", "name": "synthetic-read",
+                         "arguments": {"path": "not-executed"}}]
+        records = [
+            {"type": "title", "title": "synthetic title"},
+            header,
+            {"type": "model_change", "id": prefix + "model", "parentId": None,
+             "model": "openai/test-model"},
+            {"type": "thinking_level_change", "id": prefix + "effort",
+             "parentId": prefix + "model", "thinkingLevel": "high"},
+            {"type": "service_tier_change", "id": prefix + "tier",
+             "parentId": prefix + "effort", "serviceTier": {"openai": "priority"}},
+            {"type": "message", "id": prefix + "user", "parentId": prefix + "tier",
+             "timestamp": self.timestamp(offset + 1),
+             "message": {"role": "user", "content": "synthetic prompt",
+                         "timestamp": (self.started_at + offset + 1) * 1000}},
+            {"type": "message", "id": prefix + "assistant", "parentId": prefix + "user",
+             "timestamp": self.timestamp(offset + 9),
+             "message": {"role": "assistant", "provider": "openai", "model": "test-model",
+                         "responseId": prefix + "response", "content": content,
+                         "usage": {"output": tokens, "input": 9999, "totalTokens": 999999},
+                         "timestamp": (self.started_at + offset + 2) * 1000,
+                         "duration": 5000, "ttft": 1000,
+                         "completedAt": (self.started_at + offset + 7) * 1000,
+                         "stopReason": "toolUse" if tools else "stop"}},
+        ]
+        if tools:
+            records += [
+                {"type": "message", "id": prefix + "tool", "parentId": prefix + "assistant",
+                 "timestamp": self.timestamp(offset + 8),
+                 "message": {"role": "toolResult", "toolCallId": "read-1",
+                             "toolName": "synthetic-read", "content": [{"type": "text", "text": "synthetic result"}],
+                             "timestamp": (self.started_at + offset + 8) * 1000,
+                             "details": {"usage": {"output": 999999}}}},
+                {"type": "model_usage", "id": prefix + "utility",
+                 "usage": {"output": 999999}, "model": "test-model"},
+            ]
+        return records
+
+    def run_cli(self, arguments, now=None):
+        if now is None:
+            command = [sys.executable, "-m", "tokenmon"]
+        else:
+            # Inject only the clock; registry discovery and CLI execution remain real.
+            script = (
+                "import sys; from unittest.mock import patch; from tokenmon.cli import main; "
+                f"clock = patch('time.time', return_value={now!r}); clock.start(); "
+                "sys.exit(main())"
+            )
+            command = [sys.executable, "-c", script]
+        result = subprocess.run(command + arguments + ["--home", str(self.root)],
+                                capture_output=True, text=True, env=self.env, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        return result.stdout
+
+    def assert_metadata(self, value):
+        self.assertEqual({key: value[key] for key in (
+            "reasoning_effort", "service_tier", "speed", "speed_mode")}, {
+                "reasoning_effort": "high", "service_tier": "priority",
+                "speed": None, "speed_mode": "fast",
+            })
+
+    def assert_totals(self, data, window="all"):
+        summary = data["summary"][window]
+        self.assertEqual(summary["total_spans"], 2)
+        self.assertEqual(summary["valid_spans"], 2)
+        self.assertEqual(summary["excluded_spans"], 0)
+        self.assertEqual(summary["total_tokens"], 200)
+        self.assertEqual(summary["total_duration_seconds"], 8.0)
+        self.assertEqual(summary["weighted_tps"], 25.0)
+        self.assert_metadata(summary)
+        self.assertEqual(summary["configurations"], [{
+            "reasoning_effort": "high", "service_tier": "priority",
+            "speed": None, "speed_mode": "fast",
+        }])
+
+    def test_stats_json_counts_main_and_nested_worker_once(self):
+        data = json.loads(self.run_cli(["stats", "omp", "--all", "--json"]))
+        self.assertEqual(set(data), {"meta", "summary", "models", "recent_streams", "recent_sessions"})
+        self.assertEqual(data["meta"]["agents"], ["omp"])
+        self.assertEqual(data["meta"]["inspected_spans"], 2)
+        self.assert_totals(data)
+        self.assertEqual(set(data["models"]), {"openai/test-model"})
+        self.assertEqual(data["models"]["openai/test-model"]["all"], data["summary"]["all"])
+        streams = {stream["session_id"]: stream for stream in data["recent_streams"]}
+        self.assertEqual(set(streams), {"main-id", "worker-id"})
+        for session_id, tokens, tps, offset in (("main-id", 120, 30.0, 0), ("worker-id", 80, 20.0, 20)):
+            with self.subTest(session_id=session_id):
+                stream = streams[session_id]
+                self.assertEqual(stream["agent"], "omp")
+                self.assertEqual(stream["model"], "openai/test-model")
+                self.assertEqual(stream["tokens"], tokens)
+                self.assertEqual(stream["duration"], 4.0)
+                self.assertEqual(stream["tps"], tps)
+                self.assertEqual(stream["timestamp"], self.started_at + offset + 7)
+                self.assertEqual(stream["timing_source"], "omp-ttft")
+                self.assert_metadata(stream)
+        self.assertEqual({card["session_id"] for card in data["recent_sessions"]}, set(streams))
+        for card in data["recent_sessions"]:
+            self.assertEqual(card["cwd"], "/synthetic/omp-project")
+            self.assert_metadata(card)
+        self.assertNotIn("event_id", json.dumps(data))
+
+    def test_sessions_json_and_exact_header_id_timelines(self):
+        now = self.started_at + 60
+        sessions = json.loads(self.run_cli(["sessions", "omp", "--all", "--json"], now=now))
+        self.assertEqual([session["session_id"] for session in sessions], ["worker-id", "main-id"])
+        self.assertEqual(json.loads(self.run_cli(["ps", "omp", "--all", "--json"], now=now)), sessions)
+        for session_id, tokens, duration, kinds in [
+            ("main-id", 120, 7.0, ["user_message", "assistant_message", "reasoning", "tool_call", "tool_output"]),
+            ("worker-id", 80, 6.0, ["user_message", "assistant_message"]),
+        ]:
+            with self.subTest(session_id=session_id):
+                timeline = json.loads(self.run_cli(
+                    ["logs", session_id, "--agent", "omp", "--all", "--json"], now=now))
+                session = next(item for item in sessions if item["session_id"] == session_id)
+                self.assertEqual({key: timeline[key] for key in session}, session)
+                self.assertEqual(timeline["agent"], "omp")
+                self.assertEqual(timeline["model"], "openai/test-model")
+                self.assertEqual(timeline["cwd"], "/synthetic/omp-project")
+                self.assertEqual(timeline["total_tokens"], tokens)
+                self.assertEqual(timeline["duration_seconds"], duration)
+                self.assertEqual(timeline["user_messages"], 1)
+                self.assertEqual(timeline["assistant_messages"], 1)
+                self.assertEqual(timeline["tool_calls"], int(session_id == "main-id"))
+                self.assertEqual(sorted(event["kind"] for event in timeline["events"]), sorted(kinds))
+                self.assertEqual(sum(event["tokens"] or 0 for event in timeline["events"]), tokens)
+                self.assert_metadata(timeline)
+                for event in timeline["events"]:
+                    self.assertEqual(set(event), {"timestamp", "kind", "turn_id", "summary", "tokens",
+                                                  "duration", "reasoning_effort", "service_tier", "speed", "speed_mode"})
+                    self.assert_metadata(event)
+                    if event["kind"] != "assistant_message":
+                        self.assertIsNone(event["tokens"])
+                if session_id == "main-id":
+                    tool_events = [event for event in timeline["events"] if event["kind"].startswith("tool_")]
+                    self.assertTrue(all("synthetic-read" in event["summary"] for event in tool_events))
+
+    def test_shorthand_bare_agent_and_all_registry_behavior(self):
+        latest = json.loads(self.run_cli(["logs", "omp", "--all", "--json"]))
+        self.assertEqual(latest["session_id"], "worker-id")
+        self.assertEqual(latest["total_tokens"], 80)
+        self.assert_totals(json.loads(self.run_cli(["omp", "--all", "--json"])))
+        human = self.run_cli(["omp", "--all"])
+        self.assertIn("openai/test-model", human)
+        self.assertIn("25.0", human)
+        all_agents = json.loads(self.run_cli(["stats", "all", "--all", "--json"]))
+        self.assertEqual(all_agents["meta"]["agents"].count("omp"), 1)
+        self.assertEqual(len(all_agents["meta"]["agents"]), len(set(all_agents["meta"]["agents"])))
+        self.assert_totals(all_agents)
+        self.assertEqual({stream["agent"] for stream in all_agents["recent_streams"]}, {"omp"})
+
+    def test_auto_detection_uses_synthetic_root_and_injected_current_time(self):
+        now = self.started_at + 60
+        data = json.loads(self.run_cli(["stats", "--json"], now=now))
+        self.assertEqual(data["meta"]["agents"], ["omp"])
+        self.assertEqual(data["meta"]["timestamp"], now)
+        self.assert_totals(data, window="1d")
+        self.assertEqual({stream["session_id"] for stream in data["recent_streams"]}, {"main-id", "worker-id"})
+
+    def test_worker_follow_subprocess_emits_equal_time_append_once_and_stops(self):
+        command = [sys.executable, "-m", "tokenmon", "logs", "worker-id", "--agent", "omp",
+                   "--home", str(self.root), "--all", "-f", "--interval", "0.01"]
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, env=self.env) as process:
+            try:
+                self.assertTrue(select.select([process.stdout], [], [], 5)[0], "OMP follow header timed out")
+                header = process.stdout.readline()
+                self.assertIn("Following session worker-id (omp)", header)
+                self.write_records(self.worker_path, [{
+                    "type": "message", "id": "live-result", "parentId": "worker-id-assistant",
+                    "timestamp": self.timestamp(27),
+                    "message": {"role": "toolResult", "toolCallId": "live-call",
+                                "toolName": "equal-time-live-tool", "content": [],
+                                "timestamp": (self.started_at + 27) * 1000},
+                }], "a")
+                self.assertTrue(select.select([process.stdout], [], [], 5)[0], "OMP appended event timed out")
+                event = process.stdout.readline()
+                self.assertIn("equal-time-live-tool", event)
+                process.send_signal(signal.SIGINT)
+                remaining, errors = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, errors)
+                text = header + event + remaining
+                self.assertEqual(text.count("equal-time-live-tool"), 1)
+                self.assertIn("Stopped following session", text)
+                self.assertNotIn("synthetic prompt", text)
+                self.assertNotIn("Assistant response", text)
+                self.assertNotIn("TokenMon", text)
+                self.assertNotIn("\033[2J", text)
+                self.assertEqual(errors, "")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
 
 
 if __name__ == "__main__":

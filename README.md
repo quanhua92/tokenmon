@@ -41,7 +41,7 @@ Expand a screenshot below. Click the image to view it at full size.
 - **Zero Extra Dependencies**: Runs on standard Python 3.10+ without installing third-party packages.
 - **Strictly Read-Only**: Safely opens local files and SQLite databases in read-only mode (`?mode=ro`). Never locks or changes your logs.
 - **Meaningful Averages**: Calculates true weighted speed ($\frac{\text{total tokens}}{\text{total time}}$), median speed, and min/max ranges over rolling time windows (`30m`, `1d`, `7d`, `30d`, `all`).
-- **Supports Popular Agents**: Auto-detects **Codex** (`~/.codex`), **Claude Code** (`~/.claude/projects/`), and **Antigravity** (`~/.gemini/antigravity-cli`).
+- **Supports Popular Agents**: Auto-detects **Codex** (`~/.codex`), **Claude Code** (`~/.claude/projects/`), **Antigravity** (`~/.gemini/antigravity-cli`), and **Oh My Pi / OMP** (`~/.omp/agent/sessions/`).
 - **Session Timelines**: Step-by-step history of user prompts, thinking, assistant responses, and tool calls.
 - **JSON Ready**: Add `--json` to pipe clean data into `jq` or external dashboards.
 
@@ -84,6 +84,18 @@ TokenMon uses simple Docker-style subcommands: `stats` (default), `ps` (sessions
 
 Running `tokenmon` by itself defaults directly to `stats`.
 The examples below use the installed command; with uvx, use `uvx tokenmon` in its place.
+
+### Machine-Readable JSON Output
+
+Stats, sessions, and historical timelines support `--json` for easy scripting.
+Live `--watch` and `--follow` modes require human output and reject `--json`:
+
+```bash
+tokenmon stats --json | jq .
+tokenmon ps --json | jq .
+tokenmon logs 01a10275 --json | jq .
+tokenmon timeline --window 1d --json | jq .
+```
 
 ### Generation Speed & Metrics (`stats`, `top`, default)
 
@@ -179,6 +191,40 @@ For example:
 }
 ```
 
+### Oh My Pi (`omp`)
+
+OMP support reads main and nested subagent JSONL sessions, without opening its
+configuration databases or changing telemetry. Each worker is a separate session,
+identified by its recorded header UUID rather than its filename:
+
+```bash
+tokenmon stats omp --all
+tokenmon ps omp --all
+tokenmon logs omp --all                   # latest main or worker session
+tokenmon stats omp -w
+tokenmon logs <session-uuid> --agent omp -f --all
+tokenmon stats omp --home ~/.omp/agent --all --json
+```
+
+`--home` points to the data directory containing `sessions`, not `~/.omp` itself.
+It overrides `PI_CODING_AGENT_DIR`. Without either override, discovery uses
+`PI_CONFIG_DIR` (default `.omp`), `OMP_PROFILE` (or `PI_PROFILE`), and existing
+migrated `XDG_DATA_HOME/omp` data/profile directories on Linux and macOS.
+Main sessions and workers share the normal `--tasks` discovery limit.
+
+Output tokens come from assistant `usage.output`; task-tool aggregate usage and
+inherited parent messages are not counted again. Effort comes from recorded
+effective `thinkingLevel` settings, and provider-family tier maps supply recorded
+request mode when routing is known. Historical events keep their own settings.
+
+`omp-ttft` measures `(duration - ttft) / 1000` seconds, anchored at recorded
+completion. It is the first-output-item-to-completion window, **not guaranteed
+first-text-token decoding time**. Missing/invalid timing, tool-first or empty
+output boundaries, and incomplete responses remain excluded from TPS while
+session activity stays available. Malformed records are skipped independently;
+an unreadable source does not discard other sessions, and follow retains its
+baseline through temporary source failures.
+
 ### Active & Recent Sessions (`sessions`, `ps`, `ls`)
 
 See all recent sessions, message counts, tool runs, and idle status:
@@ -257,31 +303,6 @@ Available commands inside the shell:
 (tokenmon) help               # list all commands
 ```
 
-### Machine-Readable JSON Output
-
-Stats, sessions, and historical timelines support `--json` for easy scripting.
-Live `--watch` and `--follow` modes require human output and reject `--json`:
-
-```bash
-tokenmon stats --json | jq .
-tokenmon ps --json | jq .
-tokenmon logs 01a10275 --json | jq .
-tokenmon timeline --window 1d --json | jq .
-```
-
----
-
-## Development
-
-Clone the repository to work on TokenMon:
-
-```bash
-git clone https://github.com/quanhua92/tokenmon.git
-cd tokenmon
-uv run tokenmon
-uv run python -m unittest discover -s tests
-```
-
 ---
 
 ## Adding New Adapters
@@ -308,6 +329,17 @@ To add support for a new agent (e.g. **OpenCode**):
 1. Create `src/tokenmon/adapters/opencode.py` subclassing `BaseAdapter`.
 2. Implement discovery (`detect()`), stream parsing (`collect()`), and timelines (`collect_sessions()`).
 3. Register it in `src/tokenmon/adapters/__init__.py`.
+
+Adapters translate telemetry into shared `GenerationSpan` and
+`SessionTimeline`/`TimelineEvent` models; the analyzer and CLI own aggregation,
+formatting, and JSON serialization. Build spans with `create_span()` so invalid
+measurements remain visible in exclusion counts. Honor collection limits and
+completion-time cutoffs without discarding earlier metadata context.
+
+For live follow, override `read_session(session_id)` to reopen a retained exact
+source, and give events stable internal `event_id` values that do not change with
+usage or timestamps. `OMPAdapter` in `src/tokenmon/adapters/omp.py` demonstrates
+this for nested JSONL sessions and recorded first-output timing.
 
 ---
 

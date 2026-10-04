@@ -8,6 +8,7 @@ from tokenmon.adapters.antigravity import AntigravityAdapter
 from tokenmon.adapters.base import BaseAdapter
 from tokenmon.adapters.claude import ClaudeAdapter
 from tokenmon.adapters.codex import CodexAdapter
+from tokenmon.adapters.omp import OMPAdapter
 
 import logging
 import time
@@ -19,6 +20,7 @@ ADAPTER_REGISTRY: dict[str, Type[BaseAdapter]] = {
     "claude": ClaudeAdapter,
     "antigravity": AntigravityAdapter,
     "agy": AntigravityAdapter,
+    "omp": OMPAdapter,
 }
 
 
