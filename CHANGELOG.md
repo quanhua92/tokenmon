@@ -9,6 +9,12 @@
 - Preserve OMP historical settings and stable live identities, avoid inherited/task usage double-counting, and isolate malformed records and unreadable sources.
 - Add native Pi (`pi`) sessions, token totals, historical settings, timelines, watch, and pinned follow using a shared read-only Pi-family journal parser.
 - Keep Pi responses in exclusion counts without inventing generation timing or TPS; distinguish native Pi and OMP model-change schemas during discovery.
+- Add read-only OpenCode (`opencode`) sessions, timelines, watch, and pinned follow for native v1 JSON/SQLite and v2.0.22 SQLite projections.
+- Preserve OpenCode assistant output without migration, fork-history, step-usage, or utility-aggregate double-counting; exclude unconfirmed native generation timing and keep variant names separate from effective effort.
+- Include native Claude nested worker logs with collision-safe IDs, and merge unindexed Codex/Antigravity worker sources before applying shared discovery limits.
+- Exclude Codex copied worker history using native ownership ordinals; retain exact pinned sources through read failures and reject substituted identities.
+- Resolve exact timeline IDs outside the requested recent-session limit while preserving history cutoffs; use Antigravity step completion for session activity, elapsed time, and cutoffs.
+- Default CLI `ps`/`sessions`/`ls` to a 7-day history window; preserve explicit windows, `--all`, and 30-day stats/timeline defaults.
 
 ## [0.1.3] — 2026-10-04
 

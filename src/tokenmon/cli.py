@@ -296,6 +296,7 @@ STATS_GUIDE = """\
   • TPS uses recorded generation boundaries. Claude single-record turn-span estimates can include latency or waiting.
   • OMP omp-ttft uses the recorded first-output-item-to-completion window, not guaranteed first-text-token timing.
   • Pi journals lack confirmed generation timing: session tokens remain visible, but Pi responses do not contribute TPS.
+  • OpenCode native v1/v2 timing is unconfirmed; v2 time.streamed is a stream end, not TTFT. Session tokens remain visible.
   • TPS in the table is total tokens ÷ total seconds, not an average of per-stream speeds.
   • Outputs "valid/total": streams under 1s or with unclear timing count in total but not in TPS.
   • Median is the middle stream. It is less affected by one very slow or very fast stream.
@@ -485,13 +486,13 @@ def main() -> int:
     p_sessions.add_argument(
         "--window",
         choices=["30m", "1d", "7d", "30d", "all"],
-        default=None,
-        help="Filter sessions to a specific time window",
+        default="7d",
+        help="Filter sessions to a specific time window (default: 7d)",
     )
     p_sessions.add_argument(
         "--all",
         action="store_true",
-        help="Include full history without 30-day cutoff",
+        help="Include full history without the 7-day cutoff",
     )
     p_sessions.add_argument(
         "--tasks",
@@ -692,6 +693,19 @@ def main() -> int:
                 logger.error("Adapter '%s' error collecting sessions: %s", adapter.name, e)
                 print(f"Warning: Adapter '{adapter.name}' failed to parse sessions: {e}", file=sys.stderr)
         timelines.sort(key=lambda t: t.updated_at, reverse=True)
+        if session_target not in {"latest", "window"}:
+            exact = next((t for t in timelines if t.session_id == session_target), None)
+            if exact is None:
+                for adapter in adapters:
+                    try:
+                        candidate = adapter.read_session(session_target)
+                    except Exception as e:
+                        logger.error("Adapter '%s' error reading session: %s", adapter.name, e)
+                        continue
+                    if (candidate is not None and candidate.session_id == session_target
+                            and (min_ts is None or candidate.updated_at >= min_ts)):
+                        timelines.insert(0, candidate)
+                        break
         if not timelines:
             print("No sessions found to inspect timeline.", file=sys.stderr)
             return 1
@@ -741,14 +755,15 @@ def main() -> int:
             return 0
 
         # Single session timeline
-        selected = None
+        selected = next((t for t in timelines if t.session_id == session_target), None)
         if session_target == "latest":
             selected = timelines[0]
         else:
-            for t in timelines:
-                if t.session_id.startswith(session_target) or session_target in t.session_id:
-                    selected = t
-                    break
+            if selected is None:
+                for t in timelines:
+                    if t.session_id.startswith(session_target) or session_target in t.session_id:
+                        selected = t
+                        break
             if not selected:
                 print(f"Error: Session matching '{session_target}' not found.", file=sys.stderr)
                 return 1

@@ -16,6 +16,7 @@ from tokenmon.adapters.antigravity import AntigravityAdapter
 from tokenmon.adapters.claude import ClaudeAdapter
 from tokenmon.adapters.codex import CodexAdapter
 from tokenmon.adapters.omp import OMPAdapter
+from tokenmon.adapters.opencode import OpenCodeAdapter
 from tokenmon.adapters.pi import PiAdapter
 from tokenmon.live import follow_session, watch_stats
 from tokenmon.models import SessionTimeline, TimelineEvent, create_span
@@ -571,6 +572,189 @@ class TestPiLiveSources(unittest.TestCase):
         self.assertEqual(spans[0].timing_source, "pi-unconfirmed")
         self.assertEqual(spans[0].note, "unconfirmed_generation_timing")
         user_session = adapter.read_session("pi-user-only-id")
+        self.assertEqual(user_session.user_messages, 1)
+        self.assertEqual(user_session.assistant_messages, 0)
+        self.assertEqual(user_session.total_tokens, 0)
+
+
+class TestOpenCodeLiveSources(unittest.TestCase):
+    """Refresh native SQLite projections; control polling, not adapter behavior."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.root = Path(self.temp_dir.name)
+        self.path = self.root / "opencode.db"
+        self.started_at = datetime(2026, 10, 3, 10, tzinfo=timezone.utc).timestamp()
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.executescript("""
+                CREATE TABLE session_v2 (
+                    id TEXT PRIMARY KEY, directory TEXT, time_created INTEGER,
+                    time_updated INTEGER, model TEXT, fork_session_id TEXT, fork_boundary TEXT
+                );
+                CREATE TABLE session_message (
+                    id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+                    time_created INTEGER, time_updated INTEGER, data TEXT
+                );
+            """)
+            conn.commit()
+
+    def milliseconds(self, offset):
+        return int((self.started_at + offset) * 1000)
+
+    def insert_message(self, conn, session_id, message_id, kind, seq, data):
+        conn.execute("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)", (
+            message_id, session_id, kind, seq, data["time"]["created"],
+            data["time"].get("completed", data["time"]["created"]), json.dumps(data)))
+
+    def insert_session(self, session_id, offset=0, user_only=False):
+        model = {"id": "native-test", "providerID": "openai", "variant": "arbitrary-selector"}
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.execute("INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, NULL, NULL)", (
+                session_id, "/synthetic/opencode-project", self.milliseconds(offset),
+                self.milliseconds(offset + (1 if user_only else 7)), json.dumps(model)))
+            self.insert_message(conn, session_id, session_id + "-user", "user", 1, {
+                "time": {"created": self.milliseconds(offset + 1)},
+                "text": "baseline prompt",
+            })
+            assistant = None
+            if not user_only:
+                assistant = {
+                    "time": {"created": self.milliseconds(offset + 2),
+                             "streamed": self.milliseconds(offset + 6),
+                             "completed": self.milliseconds(offset + 7)},
+                    "model": model, "tokens": {"output": 120, "reasoning": 9999},
+                    "finish": "tool-calls",
+                    "content": [
+                        {"type": "text", "text": "baseline response"},
+                        {"type": "reasoning", "text": "baseline reasoning"},
+                        {"type": "tool", "id": session_id + "-call", "name": "baseline-native-tool",
+                         "time": {"created": self.milliseconds(offset + 3),
+                                  "ran": self.milliseconds(offset + 4)},
+                         "state": {"status": "running", "input": {"not": "executed"}}},
+                    ],
+                }
+                self.insert_message(conn, session_id, session_id + "-assistant",
+                                    "assistant", 2, assistant)
+            conn.commit()
+        return assistant
+
+    def test_follow_keeps_native_identity_through_projection_updates_and_database_failures(self):
+        assistant = self.insert_session("oc-pinned")
+        adapter = OpenCodeAdapter(self.root)
+        initial = adapter.collect_sessions(max_sessions=1)[0]
+        self.assertEqual(initial.session_id, "oc-pinned")
+        self.assertEqual(initial.total_tokens, 120)
+        baseline_ids = {event.event_id for event in initial.events}
+        self.assertTrue(all(identity is not None for identity in baseline_ids))
+        self.assertEqual(sum(event.kind == "tool_call" for event in initial.events), 1)
+        self.assertFalse(any(event.kind == "tool_output" for event in initial.events))
+        hidden_path = self.path.with_suffix(".unavailable")
+        snapshots = []
+        polls = 0
+
+        def poll(_interval):
+            nonlocal polls
+            polls += 1
+            snapshots.append(output.getvalue())
+            if polls == 1:
+                assistant["tokens"]["output"] = 160
+                assistant["metadata"] = {
+                    "reasoning_effort": "high", "service_tier": "priority", "speed": "fast",
+                }
+                assistant["content"][0]["text"] = "updated baseline response"
+                with closing(sqlite3.connect(self.path)) as conn:
+                    conn.execute("UPDATE session_message SET data = ?, time_updated = ? WHERE id = ?", (
+                        json.dumps(assistant), self.milliseconds(9), "oc-pinned-assistant"))
+                    self.insert_message(conn, "oc-pinned", "equal-time-user", "user", 3, {
+                        "time": {"created": self.milliseconds(7)}, "text": "equal-time-native-prompt",
+                    })
+                    conn.commit()
+                self.insert_session("oc-newer", offset=100)
+            elif polls == 2:
+                assistant["content"][2]["state"].update(status="completed", output="synthetic result")
+                assistant["content"][2]["time"]["completed"] = self.milliseconds(7)
+                with closing(sqlite3.connect(self.path)) as conn:
+                    conn.execute("UPDATE session_message SET data = ? WHERE id = ?", (
+                        json.dumps(assistant), "oc-pinned-assistant"))
+                    conn.commit()
+            elif polls == 3:
+                self.path.rename(hidden_path)
+            elif polls == 4:
+                # An unreadable database projection must not reset follow's seen baseline.
+                self.path.write_bytes(b"synthetic invalid SQLite file")
+            elif polls == 5:
+                self.path.unlink()
+                hidden_path.rename(self.path)
+                with closing(sqlite3.connect(self.path)) as conn:
+                    self.insert_message(conn, "oc-pinned", "restored-user", "user", 4, {
+                        "time": {"created": self.milliseconds(7)}, "text": "restored-native-prompt",
+                    })
+                    conn.commit()
+            elif polls == 7:
+                raise KeyboardInterrupt
+
+        with patch("tokenmon.live.time.sleep", side_effect=poll), \
+                patch("sys.stdout", new=io.StringIO()) as output:
+            self.assertEqual(follow_session(adapter, initial, interval=0.01), 0)
+        text = output.getvalue()
+        self.assertIn("oc-pinned", text)
+        self.assertEqual(text.count("equal-time-native-prompt"), 1)
+        self.assertEqual(text.count("restored-native-prompt"), 1)
+        self.assertEqual(text.count("baseline-native-tool"), 1)
+        self.assertNotIn("baseline prompt", text)
+        self.assertNotIn("baseline response", text)
+        self.assertNotIn("baseline reasoning", text)
+        self.assertNotIn("oc-newer", text)
+        self.assertNotIn("\033[2J", text)
+        self.assertIn("equal-time-native-prompt", snapshots[1])
+        self.assertNotIn("baseline-native-tool", snapshots[1])
+        self.assertIn("baseline-native-tool", snapshots[2])
+        self.assertEqual(snapshots[2], snapshots[3])
+        self.assertEqual(snapshots[3], snapshots[4])
+        self.assertIn("restored-native-prompt", snapshots[5])
+        self.assertEqual(snapshots[5], snapshots[6])
+        self.assertEqual(adapter.collect_sessions(max_sessions=1)[0].session_id, "oc-newer")
+        refreshed = adapter.read_session("oc-pinned")
+        self.assertIsNotNone(refreshed)
+        self.assertTrue(baseline_ids.issubset({event.event_id for event in refreshed.events}))
+        self.assertEqual(refreshed.total_tokens, 160)
+        final_assistant = next(event for event in refreshed.events if event.kind == "assistant_message")
+        original_assistant = next(event for event in initial.events if event.kind == "assistant_message")
+        self.assertEqual(final_assistant.event_id, original_assistant.event_id)
+        self.assertEqual(final_assistant.tokens, 160)
+        self.assertEqual(final_assistant.reasoning_effort, "high")
+        self.assertEqual(final_assistant.service_tier, "priority")
+        self.assertEqual(final_assistant.speed, "fast")
+        original_call = next(event for event in initial.events if event.kind == "tool_call")
+        final_call = next(event for event in refreshed.events if event.kind == "tool_call")
+        self.assertEqual(final_call.event_id, original_call.event_id)
+        outputs = [event for event in refreshed.events if event.kind == "tool_output"]
+        self.assertEqual(len(outputs), 1)
+        self.assertIsNone(outputs[0].tokens)
+
+    def test_watch_keeps_recent_native_and_user_only_cards_with_no_valid_streams(self):
+        self.insert_session("oc-response")
+        self.insert_session("oc-user-only", offset=20, user_only=True)
+        adapter = OpenCodeAdapter(self.root)
+        with patch("tokenmon.live.time.time", side_effect=[self.started_at + 30, self.started_at + 32]), \
+                patch("tokenmon.live.time.sleep", side_effect=[None, KeyboardInterrupt]), \
+                patch("sys.stdout", new=io.StringIO()) as output:
+            self.assertEqual(watch_stats([adapter], window="1d", recent=2, compact=False), 0)
+        text = output.getvalue()
+        for session in adapter.collect_sessions():
+            self.assertIn(session.session_id, text)
+        self.assertIn("openai/native-test", text)
+        self.assertNotIn("\033[2J", text)
+        spans = adapter.collect()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].tokens, 120)
+        self.assertFalse(spans[0].is_valid)
+        self.assertIsNone(spans[0].tps)
+        self.assertEqual(spans[0].timing_source, "opencode-unconfirmed")
+        self.assertEqual(spans[0].note, "unconfirmed_generation_timing")
+        self.assertEqual(adapter.read_session("oc-response").total_tokens, 120)
+        user_session = adapter.read_session("oc-user-only")
         self.assertEqual(user_session.user_messages, 1)
         self.assertEqual(user_session.assistant_messages, 0)
         self.assertEqual(user_session.total_tokens, 0)

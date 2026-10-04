@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import stat
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -57,20 +58,50 @@ class ClaudeAdapter(BaseAdapter):
         return projects_dir.exists() or (r / "history.jsonl").exists()
 
     def _discover_session_files(self, max_sessions: int, min_timestamp: float | None = None) -> list[Path]:
+        if max_sessions <= 0:
+            return []
         projects_dir = self.root / "projects"
-        candidates: list[Path] = []
+        candidates: list[tuple[float, str, Path]] = []
 
-        if projects_dir.exists():
-            # Find all *.jsonl files across project directories
-            for jsonl_file in projects_dir.glob("*/*.jsonl"):
-                if jsonl_file.is_file() and jsonl_file.stat().st_size > 0:
-                    if min_timestamp is not None and jsonl_file.stat().st_mtime < min_timestamp:
-                        continue
-                    candidates.append(jsonl_file)
+        # Claude persists workers under <project>/<parent>/subagents/agent-*.jsonl.
+        # Walk without directory symlinks and bound the combined main/worker set
+        # before parsing. File mtimes order discovery, not recorded activity.
+        if projects_dir.is_symlink():
+            return []
+        for directory, directories, filenames in os.walk(projects_dir, followlinks=False):
+            base = Path(directory)
+            directories[:] = [
+                name for name in directories
+                if not name.startswith(".") and not (base / name).is_symlink()
+            ]
+            depth = len(base.relative_to(projects_dir).parts)
+            if depth == 2:
+                directories[:] = [name for name in directories if name == "subagents"]
+            elif depth >= 3:
+                directories[:] = []
+            for name in filenames:
+                if name.startswith(".") or not name.endswith(".jsonl"):
+                    continue
+                if depth != 1 and not (depth == 3 and base.name == "subagents" and name.startswith("agent-")):
+                    continue
+                path = base / name
+                try:
+                    info = path.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode) and info.st_size > 0:
+                    candidates.append((info.st_mtime, path.relative_to(projects_dir).as_posix(), path))
 
-        # Sort by modification time descending
-        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return candidates[:max_sessions]
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return [path for _, _, path in candidates[:max_sessions]]
+
+    def _session_id(self, path: Path) -> str:
+        relative = path.relative_to(self.root / "projects")
+        if len(relative.parts) == 4 and relative.parts[2] == "subagents":
+            # Workers record the parent's sessionId. Keep their agent basename
+            # prefix selectable, scoped by project/parent to avoid collisions.
+            return f"{path.stem}@{relative.parts[0]}/{relative.parts[1]}"
+        return path.stem
 
     def collect(self, max_sessions: int = 64, min_timestamp: float | None = None) -> list[GenerationSpan]:
         session_files = self._discover_session_files(max_sessions, min_timestamp=min_timestamp)
@@ -78,8 +109,9 @@ class ClaudeAdapter(BaseAdapter):
 
         for p in session_files:
             try:
-                session_id = p.stem
+                session_id = self._session_id(p)
                 spans = self._parse_session_spans(session_id, p, min_timestamp=min_timestamp)
+                self._timeline_sources[session_id] = p
                 all_spans.extend(spans)
             except Exception as e:
                 logger.error("ClaudeAdapter: skipping unparseable session file '%s': %s", p, e)
@@ -195,8 +227,9 @@ class ClaudeAdapter(BaseAdapter):
 
         for p in session_files:
             try:
-                timeline = self._parse_session_timeline(p.stem, p)
-                self._timeline_sources[p.stem] = p
+                session_id = self._session_id(p)
+                timeline = self._parse_session_timeline(session_id, p)
+                self._timeline_sources[session_id] = p
                 if timeline.events and (min_timestamp is None or timeline.updated_at >= min_timestamp):
                     timelines.append(timeline)
             except Exception as e:
@@ -209,7 +242,8 @@ class ClaudeAdapter(BaseAdapter):
         path = self._timeline_sources.get(session_id)
         if path is None:
             return super().read_session(session_id)
-        return self._parse_session_timeline(session_id, path)
+        timeline = self._parse_session_timeline(session_id, path)
+        return timeline if timeline.events else None
 
     def _parse_session_timeline(self, session_id: str, jsonl_path: Path) -> SessionTimeline:
         events: list[TimelineEvent] = []

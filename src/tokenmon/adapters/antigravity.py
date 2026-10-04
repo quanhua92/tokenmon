@@ -8,10 +8,11 @@ import math
 import os
 import re
 import sqlite3
+import stat
 from bisect import bisect_right
 from contextlib import closing
-from datetime import datetime, timezone
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -128,46 +129,76 @@ class AntigravityAdapter(BaseAdapter):
         summary_db = r / "conversation_summaries.db"
         return conv_dir.is_dir() or summary_db.is_file()
 
-    def _discover_session_dbs(self, max_sessions: int, min_timestamp: float | None = None) -> list[Path]:
+    def _discover_session_dbs(self, max_sessions: int) -> list[Path]:
+        if max_sessions <= 0:
+            return []
         conv_dir = self.root / "conversations"
-        if not conv_dir.exists():
+        sources: dict[str, tuple[Path, float]] = {}
+        try:
+            for path in conv_dir.glob("*.db"):
+                try:
+                    info = path.stat()
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode):
+                    sources[path.stem] = (path, info.st_mtime)
+        except OSError:
             return []
 
-        # Check conversation_summaries.db for order if available
+        # The summary index orders known conversations, but is not an exhaustive
+        # source inventory. Independently persisted workers may have no row.
+        # Summary times and filesystem mtimes order sources only; recorded step
+        # times determine the cutoff after the bounded sources have been parsed.
+        indexed: list[tuple[Path, float]] = []
+        seen: set[str] = set()
         summary_db = self.root / "conversation_summaries.db"
-        candidates: list[Path] = []
-        if summary_db.exists():
+        try:
+            with closing(open_ro_db(summary_db)) as conn:
+                rows = conn.execute(
+                    "SELECT conversation_id, last_modified_time FROM conversation_summaries "
+                    "ORDER BY last_modified_time DESC"
+                )
+                for session_id, modified in rows:
+                    if session_id in sources and session_id not in seen:
+                        path, timestamp = sources[session_id]
+                        try:
+                            recorded = datetime.fromisoformat(str(modified).replace("Z", "+00:00"))
+                            if recorded.tzinfo is not None and math.isfinite(recorded.timestamp()):
+                                timestamp = recorded.timestamp()
+                        except (ValueError, TypeError, OverflowError, OSError):
+                            pass
+                        indexed.append((path, timestamp))
+                        seen.add(session_id)
+        except (sqlite3.Error, OSError):
+            pass
+
+        unindexed: list[tuple[Path, float]] = []
+        for session_id, (path, timestamp) in sources.items():
+            if session_id in seen:
+                continue
+            # Native conversations also persist SQLite WALs: a live worker can
+            # append output without checkpointing or touching the main DB file.
             try:
-                with closing(open_ro_db(summary_db)) as conn:
-                    cur = conn.cursor()
-                    cur.execute(
-                        "SELECT conversation_id, last_modified_time FROM conversation_summaries "
-                        "ORDER BY last_modified_time DESC LIMIT ?",
-                        (max_sessions * 2,),
-                    )
-                    for cid, lmt in cur.fetchall():
-                        if min_timestamp is not None and lmt:
-                            try:
-                                dt = datetime.fromisoformat(str(lmt).replace("Z", "+00:00"))
-                                if dt.timestamp() < min_timestamp:
-                                    continue
-                            except Exception:
-                                pass
-                        db_p = conv_dir / f"{cid}.db"
-                        if db_p.is_file():
-                            candidates.append(db_p)
-                            if len(candidates) >= max_sessions:
-                                return candidates
-            except Exception:
+                wal = path.with_name(path.name + "-wal").stat()
+                if stat.S_ISREG(wal.st_mode) and wal.st_size:
+                    timestamp = max(timestamp, wal.st_mtime)
+            except OSError:
                 pass
+            unindexed.append((path, timestamp))
+        unindexed.sort(key=lambda source: (-source[1], source[0].name))
 
-        if not candidates:
-            all_files = list(conv_dir.glob("*.db"))
-            if min_timestamp is not None:
-                all_files = [p for p in all_files if p.stat().st_mtime >= min_timestamp]
-            all_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            candidates = all_files[:max_sessions]
-
+        # Merge recency streams instead of filling the limit from the summary
+        # alone. Keep the native index's relative order even for unusual dates.
+        candidates: list[Path] = []
+        indexed_pos = unindexed_pos = 0
+        while len(candidates) < max_sessions and (indexed_pos < len(indexed) or unindexed_pos < len(unindexed)):
+            if (unindexed_pos < len(unindexed) and
+                    (indexed_pos >= len(indexed) or unindexed[unindexed_pos][1] > indexed[indexed_pos][1])):
+                candidates.append(unindexed[unindexed_pos][0])
+                unindexed_pos += 1
+            else:
+                candidates.append(indexed[indexed_pos][0])
+                indexed_pos += 1
         return candidates
 
     def last_generation_timestamp(self) -> float | None:
@@ -239,7 +270,7 @@ class AntigravityAdapter(BaseAdapter):
         return default_model, default_settings, step_model_map, step_settings_map
 
     def collect(self, max_sessions: int = 64, min_timestamp: float | None = None) -> list[GenerationSpan]:
-        dbs = self._discover_session_dbs(max_sessions, min_timestamp=min_timestamp)
+        dbs = self._discover_session_dbs(max_sessions)
         spans: list[GenerationSpan] = []
 
         for db_path in dbs:
@@ -307,7 +338,7 @@ class AntigravityAdapter(BaseAdapter):
         return spans
 
     def collect_sessions(self, max_sessions: int = 32, min_timestamp: float | None = None) -> list[SessionTimeline]:
-        dbs = self._discover_session_dbs(max_sessions, min_timestamp=min_timestamp)
+        dbs = self._discover_session_dbs(max_sessions)
         timelines: list[SessionTimeline] = []
 
         for p in dbs:
@@ -324,19 +355,19 @@ class AntigravityAdapter(BaseAdapter):
 
     def read_session(self, session_id: str) -> SessionTimeline | None:
         # Follow uses the exact ID, even when it leaves the recent-session limit.
-        if not (self.root / "conversations" / f"{session_id}.db").is_file():
+        if not session_id or Path(session_id).name != session_id:
             return None
-        return self.parse_session_timeline(session_id)
+        try:
+            if not (self.root / "conversations" / f"{session_id}.db").is_file():
+                return None
+            timeline = self.parse_session_timeline(session_id)
+        except OSError:
+            return None
+        return timeline if timeline.events else None
 
     def parse_session_timeline(self, session_id: str) -> SessionTimeline:
+        # Never substitute a prefix-matched conversation after a source vanishes.
         db_path = self.root / "conversations" / f"{session_id}.db"
-        if not db_path.exists():
-            # Try fuzzy match if session_id is a prefix
-            conv_dir = self.root / "conversations"
-            matches = list(conv_dir.glob(f"{session_id}*.db"))
-            if matches:
-                db_path = matches[0]
-                session_id = db_path.stem
 
         if not db_path.exists():
             return SessionTimeline(
@@ -351,6 +382,7 @@ class AntigravityAdapter(BaseAdapter):
         events: list[TimelineEvent] = []
         model = "gemini"
         latest_settings = (None, None, None)
+        last_activity: float | None = None
 
         try:
             with closing(open_ro_db(db_path)) as conn:
@@ -361,8 +393,10 @@ class AntigravityAdapter(BaseAdapter):
                 model_boundaries = sorted(step_model_map)
 
                 # Read all steps
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(steps)")}
+                payload_column = "step_payload" if "step_payload" in columns else "NULL"
                 cur.execute(
-                    "SELECT idx, step_type, metadata, step_payload FROM steps "
+                    f"SELECT idx, step_type, metadata, {payload_column} FROM steps "
                     "WHERE metadata IS NOT NULL ORDER BY idx;"
                 )
                 for idx, step_type, meta, payload in cur.fetchall():
@@ -475,12 +509,15 @@ class AntigravityAdapter(BaseAdapter):
                     for index in range(first_new_event, len(events)):
                         events[index] = replace(events[index], reasoning_effort=settings[0],
                                                 service_tier=settings[1], speed=settings[2])
+                    if len(events) > first_new_event:
+                        end = max(t_start, t_end if t_end is not None else t_start)
+                        last_activity = end if last_activity is None else max(last_activity, end)
         except Exception:
             pass
 
         events.sort(key=lambda e: e.timestamp)
         created_at = events[0].timestamp if events else 0.0
-        updated_at = events[-1].timestamp if events else 0.0
+        updated_at = last_activity if last_activity is not None else 0.0
 
         return SessionTimeline(
             session_id=session_id,

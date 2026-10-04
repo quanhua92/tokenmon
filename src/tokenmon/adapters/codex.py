@@ -169,8 +169,68 @@ class CodexAdapter(BaseAdapter):
 
         return starts
 
-    def _discover_sessions(self, max_sessions: int, min_timestamp: float | None = None) -> list[tuple[str, Path, str]]:
-        found: list[tuple[str, Path, str]] = []
+    @staticmethod
+    def _session_meta(path: Path) -> dict | None:
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(record, dict) and record.get("type") == "session_meta":
+                        payload = record.get("payload")
+                        if isinstance(payload, dict):
+                            return payload
+                    if isinstance(record, dict):
+                        return None
+        except OSError:
+            pass
+        return None
+
+    @staticmethod
+    def _is_subagent(source: object) -> bool:
+        if isinstance(source, str):
+            try:
+                source = json.loads(source)
+            except ValueError:
+                return False
+        return isinstance(source, dict) and "subagent" in source
+
+    def _session_records(self, path: Path):
+        meta = self._session_meta(path) or {}
+        boundary = meta.get("subagent_history_start_ordinal")
+        boundary = boundary if isinstance(boundary, int) and not isinstance(boundary, bool) and boundary >= 0 else None
+        ambiguous_fork = (
+            self._is_subagent(meta.get("source"))
+            and (bool(meta.get("forked_from_id")) or "subagent_history_start_ordinal" in meta)
+            and boundary is None
+        )
+        if ambiguous_fork:
+            logger.warning("CodexAdapter: skipping subagent activity without a recorded ownership boundary: %s", path)
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            for number, line in enumerate(stream):
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                ordinal = record.get("ordinal")
+                owned = not ambiguous_fork and (
+                    boundary is None
+                    or (isinstance(ordinal, int) and not isinstance(ordinal, bool) and ordinal >= boundary)
+                )
+                yield number, record, owned
+
+    def _discover_sessions(
+        self, max_sessions: int, min_timestamp: float | None = None, *, session_id: str | None = None,
+    ) -> list[tuple[str, Path, str]]:
+        if max_sessions <= 0:
+            return []
+        candidates: dict[str, tuple[float, Path, str]] = {}
+        indexed_ids: set[str] = set()
+        indexed_paths: set[Path] = set()
         state_db = find_newest_db(self.root, "state")
 
         if state_db:
@@ -178,40 +238,67 @@ class CodexAdapter(BaseAdapter):
                 with closing(open_ro_db(state_db)) as conn:
                     cols = {r[1] for r in conn.execute("PRAGMA table_info(threads)")}
                     opt_model = "model" if "model" in cols else "NULL AS model"
-                    where_clause = "WHERE archived = 0"
-                    params: list[object] = []
-                    if min_timestamp is not None:
-                        where_clause += " AND updated_at >= ?"
-                        params.append(int(min_timestamp))
-                    params.append(max_sessions)
-
                     rows = conn.execute(
-                        f"SELECT id, rollout_path, {opt_model} FROM threads "
-                        f"{where_clause} ORDER BY updated_at DESC LIMIT ?",
-                        tuple(params),
+                        f"SELECT id, rollout_path, {opt_model}, archived, updated_at FROM threads "
+                        "ORDER BY updated_at DESC",
                     ).fetchall()
-                    for task_id, path_str, model in rows:
-                        if path_str:
-                            p = Path(path_str).expanduser()
-                            if p.exists() and p.suffix == ".jsonl":
-                                found.append((task_id, p, model or "unknown"))
-            except Exception:
+                for task_id, path_str, model, archived, updated in rows:
+                    if isinstance(task_id, str):
+                        indexed_ids.add(task_id)
+                    if not isinstance(path_str, str) or not path_str:
+                        continue
+                    path = Path(path_str).expanduser().resolve()
+                    indexed_paths.add(path)
+                    if archived or path.suffix != ".jsonl":
+                        continue
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    meta = self._session_meta(path) or {}
+                    native_id = meta.get("id")
+                    task_id = native_id if isinstance(native_id, str) and native_id else task_id
+                    if not isinstance(task_id, str) or not task_id:
+                        continue
+                    indexed_ids.add(task_id)
+                    rank = updated if isinstance(updated, (int, float)) and math.isfinite(updated) else stat.st_mtime
+                    candidates.setdefault(task_id, (rank, path, model or "unknown"))
+            except (OSError, sqlite3.Error):
                 pass
 
-        if not found:
-            sessions_dir = self.root / "sessions"
-            if sessions_dir.exists():
-                all_files = list(sessions_dir.glob("**/*.jsonl"))
-                if min_timestamp is not None:
-                    all_files = [p for p in all_files if p.stat().st_mtime >= min_timestamp]
-                candidates = sorted(
-                    all_files,
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                for p in candidates[:max_sessions]:
-                    found.append((p.stem, p, "unknown"))
+        # Indexed main threads do not imply that every persisted worker is indexed.
+        # Keep archived indexed threads excluded rather than reviving their old files.
+        for directory, _, filenames in os.walk(self.root / "sessions", followlinks=False):
+            for filename in filenames:
+                if filename.startswith(".") or not filename.endswith(".jsonl"):
+                    continue
+                path = (Path(directory) / filename).resolve()
+                if path in indexed_paths:
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if not stat.st_size:
+                    continue
+                meta = self._session_meta(path) or {}
+                native_id = meta.get("id")
+                task_id = native_id if isinstance(native_id, str) and native_id else path.stem
+                if task_id in indexed_ids:
+                    continue
+                candidate = (stat.st_mtime, path, "unknown")
+                previous = candidates.get(task_id)
+                if previous is None or (candidate[0], str(path)) > (previous[0], str(previous[1])):
+                    candidates[task_id] = candidate
 
+        ranked = sorted(candidates.items(), key=lambda item: (-item[1][0], str(item[1][1])))
+        found = [
+            (task_id, path, model) for task_id, (_, path, model) in ranked
+            if session_id is None or task_id == session_id
+        ][:max_sessions]
+        for task_id, path, model in found:
+            self._timeline_sources.setdefault(task_id, (path, model))
+        # Completion/event timestamps, not file/index freshness, enforce cutoffs.
         return found
 
     def _parse_session_file(
@@ -234,17 +321,8 @@ class CodexAdapter(BaseAdapter):
         output_settings = (None, None, None)
 
         try:
-            with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except Exception:
-                        continue
-                    if not isinstance(record, dict):
-                        continue
+            with closing(self._session_records(jsonl_path)) as records:
+                for _, record, owned in records:
 
                     val = record.get("payload")
                     at = parse_timestamp(record.get("timestamp"))
@@ -254,6 +332,13 @@ class CodexAdapter(BaseAdapter):
                     kind = record.get("type")
                     event = val.get("type")
                     if not isinstance(kind, str) or (event is not None and not isinstance(event, str)):
+                        continue
+                    # Inherited settings remain context, but neither inherited items
+                    # nor cumulative counters belong to this worker's output.
+                    if not owned and not (
+                        kind == "turn_context"
+                        or (kind == "event_msg" and event == "thread_settings_applied")
+                    ):
                         continue
 
                     if kind == "turn_context":
@@ -308,7 +393,7 @@ class CodexAdapter(BaseAdapter):
                             timings.clear()
                         elif event == "token_count":
                             info = val.get("info")
-                            if usage_snapshots.is_new(info):
+                            if isinstance(info, dict) and usage_snapshots.is_new(info):
                                 usage = info.get("last_token_usage")
                                 if isinstance(usage, dict) and items:
                                     self._append_span(
@@ -456,8 +541,8 @@ class CodexAdapter(BaseAdapter):
         for session_id, jsonl_path, default_model in sessions:
             try:
                 timeline = self._parse_session_timeline(session_id, jsonl_path, default_model)
-                self._timeline_sources[session_id] = (jsonl_path, default_model)
-                if timeline.events and (min_timestamp is None or timeline.updated_at >= min_timestamp):
+                self._timeline_sources.setdefault(session_id, (jsonl_path, default_model))
+                if timeline is not None and timeline.events and (min_timestamp is None or timeline.updated_at >= min_timestamp):
                     timelines.append(timeline)
             except Exception as e:
                 logger.error("CodexAdapter: skipping unparseable session timeline '%s': %s", jsonl_path, e)
@@ -468,8 +553,17 @@ class CodexAdapter(BaseAdapter):
     def read_session(self, session_id: str) -> SessionTimeline | None:
         source = self._timeline_sources.get(session_id)
         if source is None:
-            return super().read_session(session_id)
+            sources = self._discover_sessions(1, session_id=session_id)
+            if not sources:
+                return None
+            _, path, model = sources[0]
+            source = (path, model)
         path, model = source
+        if not path.is_file():
+            return None
+        meta = self._session_meta(path)
+        if meta is not None and meta.get("id") is not None and meta.get("id") != session_id:
+            return None
         return self._parse_session_timeline(session_id, path, model)
 
     def _parse_session_timeline(
@@ -477,7 +571,7 @@ class CodexAdapter(BaseAdapter):
         session_id: str,
         jsonl_path: Path,
         default_model: str,
-    ) -> SessionTimeline:
+    ) -> SessionTimeline | None:
         events: list[TimelineEvent] = []
         model = default_model
         turn_id = ""
@@ -486,18 +580,9 @@ class CodexAdapter(BaseAdapter):
         reasoning_effort = service_tier = speed = None
 
         try:
-            with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
-                for record_number, line in enumerate(f):
+            with closing(self._session_records(jsonl_path)) as records:
+                for record_number, record, owned in records:
                     first_new_event = len(events)
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except Exception:
-                        continue
-                    if not isinstance(record, dict):
-                        continue
 
                     val = record.get("payload")
                     at = parse_timestamp(record.get("timestamp"))
@@ -513,6 +598,11 @@ class CodexAdapter(BaseAdapter):
                         c = val.get("cwd")
                         if isinstance(c, str) and c:
                             cwd = c
+                    if not owned and not (
+                        kind in {"session_meta", "turn_context"}
+                        or (kind == "event_msg" and event == "thread_settings_applied")
+                    ):
+                        continue
 
                     if kind == "turn_context":
                         t = val.get("turn_id")
@@ -649,6 +739,8 @@ class CodexAdapter(BaseAdapter):
                     for idx in range(first_new_event, len(events)):
                         events[idx] = replace(events[idx], event_id=f"record:{record_number}:{events[idx].kind}",
                                               reasoning_effort=reasoning_effort, service_tier=service_tier, speed=speed)
+        except OSError:
+            return None
         except Exception:
             pass
 

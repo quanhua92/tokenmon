@@ -41,7 +41,7 @@ Expand a screenshot below. Click the image to view it at full size.
 - **Zero Extra Dependencies**: Runs on standard Python 3.10+ without installing third-party packages.
 - **Strictly Read-Only**: Safely opens local files and SQLite databases in read-only mode (`?mode=ro`). Never locks or changes your logs.
 - **Meaningful Averages**: Calculates true weighted speed ($\frac{\text{total tokens}}{\text{total time}}$), median speed, and min/max ranges over rolling time windows (`30m`, `1d`, `7d`, `30d`, `all`).
-- **Supports Popular Agents**: Auto-detects **Codex** (`~/.codex`), **Claude Code** (`~/.claude/projects/`), **Antigravity** (`~/.gemini/antigravity-cli`), **Oh My Pi / OMP** (`~/.omp/agent/sessions/`), and **Pi** (`~/.pi/agent/sessions/`).
+- **Supports Popular Agents**: Auto-detects **Codex** (`~/.codex`), **Claude Code** (`~/.claude/projects/`), **Antigravity** (`~/.gemini/antigravity-cli`), **Oh My Pi / OMP** (`~/.omp/agent/sessions/`), **Pi** (`~/.pi/agent/sessions/`), and **OpenCode** (`~/.local/share/opencode`; v1 JSON/SQLite and v2 SQLite).
 - **Session Timelines**: Step-by-step history of user prompts, thinking, assistant responses, and tool calls.
 - **JSON Ready**: Add `--json` to pipe clean data into `jq` or external dashboards.
 
@@ -99,165 +99,66 @@ tokenmon timeline --window 1d --json | jq .
 
 ### Generation Speed & Metrics (`stats`, `top`, default)
 
-View token throughput (TPS), rolling averages, and recent generation outputs:
-
 ```bash
-# Auto-detect local agents and show stats (default)
-tokenmon
-# or explicitly
-tokenmon stats
-
-# Filter to a specific time window (30m, 1d, 7d, 30d, all)
-tokenmon stats --window 1d
-
-# Refresh the full dashboard every 2 seconds (Ctrl+C to stop)
-tokenmon stats --watch
-tokenmon stats -w
-tokenmon stats --watch --window 1d
-
-# Customize the refresh interval
-tokenmon stats --watch --window 1d --interval 5
-
-# Include full history beyond the default 30-day cutoff
-tokenmon stats --all
-
-# Target a specific agent or custom folder
-tokenmon stats codex
-tokenmon stats claude --home ~/.claude
-
-# Compact layout for narrow panes or wide full-detail table
-tokenmon stats --compact
-tokenmon stats --wide
+tokenmon                                # auto-detect agents
+tokenmon stats codex --window 1d         # select agent and window
+tokenmon stats -w --interval 5           # live dashboard; Ctrl+C stops
+tokenmon stats --all --wide              # full history and detailed layout
 ```
 
-Watch mode refreshes throughput metrics, recent generation streams, and recent
-session cards together. It redraws the screen in a terminal; redirected output
-appends complete snapshots. Agent selection, `--home`, `--tasks`, `--recent`,
-`--compact`, and `--wide` also work with `--watch`.
+Windows: `30m`, `1d`, `7d`, `30d`, `all`; the default history cutoff is 30 days.
+`-w` means watch, not a window. Use `--compact` for narrow panes. Watch refreshes
+metrics, recent streams, and session cards; redirected output appends snapshots.
+`--tasks` limits inspected sessions, including with `--all`.
 
-`-w` is a shortcut for `--watch` on stats. Time filtering uses the explicit
-`--window` option across commands; replace the former `-w 1d` syntax with
-`--window 1d` in existing commands and scripts. Combine them as
-`tokenmon stats -w --window 1d`.
+- **Weighted TPS** = valid tokens ÷ valid generation seconds. Median and range use
+  individual valid streams.
+- Total generation time sums overlapping streams separately; human output uses
+  hours/minutes/seconds, while JSON keeps numeric seconds.
+- Streams under one second, above 400 TPS, or with unconfirmed timing are excluded.
+  Claude's single-record `turn-span` includes latency; OMP's `omp-ttft` measures
+  first-output-item to completion, not guaranteed first-text-token decoding.
+- **Pi and OpenCode show sessions and token totals, but no confirmed TPS.**
+  OpenCode v2's `time.streamed` is a stream **end**, not TTFT.
+- Effort and speed come only from recorded metadata, never model names or TPS.
+  Missing JSON fields are `null`; session settings are current and event settings
+  historical. Stats `configurations` describe valid streams; singular fields are
+  `null` when configurations disagree.
 
-The wide stats table formats total generation time as hours, minutes, and seconds
-(for example, `13h 53m 46s`). This sums durations across streams and sessions, so
-overlapping sessions can produce a total longer than the window's wall-clock time.
-JSON retains numeric duration values in seconds.
+### Agent Data
 
-Recent streams, session lists/cards, and timelines show explicit reasoning effort
-and speed metadata when available:
+| Agent | Default data root | Native override |
+|---|---|---|
+| `codex` | `~/.codex` | `CODEX_HOME` |
+| `claude` | `~/.claude` | `CLAUDE_HOME` |
+| `antigravity` / `agy` | `~/.gemini/antigravity-cli` | `ANTIGRAVITY_HOME` |
+| `omp` | `~/.omp/agent` | `PI_CODING_AGENT_DIR`; native profiles/XDG |
+| `pi` | `~/.pi/agent` | `PI_CODING_AGENT_DIR` |
+| `opencode` | `~/.local/share/opencode` | `XDG_DATA_HOME/opencode`, `OPENCODE_DB` |
 
-```text
-gpt-6.1-sol medium fast : 45.9 TPS (937 tokens in 20.43s) [stream-log]
-```
+`--home` selects the data root and overrides native environment settings.
+OMP/Pi roots contain `sessions`, including nested persisted workers. OMP also honors
+`PI_CONFIG_DIR`, `OMP_PROFILE`/`PI_PROFILE`, and existing migrated XDG directories.
+OpenCode's database override may be absolute or data-relative; in-memory stores
+cannot be monitored externally. Existing/copied logs suffice without running an agent.
 
-Codex reads effort from turn context and settings, and tier from recorded thread
-settings or response usage. Recorded `priority`/`fast` tiers display as `fast`,
-following the [OpenAI fast-mode tier names](https://developers.openai.com/api/docs/guides/fast-mode).
-Settings describe the recorded request mode; they do not independently confirm the
-server's delivered tier. Claude reads explicit effort/configuration and usage
-tier/speed fields. Antigravity reads explicit named settings in generation
-metadata when present; current logs may not record them. Missing metadata is
-omitted in human output and becomes `null` in JSON's `reasoning_effort`,
-`service_tier`, `speed`, and normalized `speed_mode` fields. Model names and measured TPS never determine
-effort or fast mode.
+OpenCode formats were checked at **1.0.0/1.1.65** (split JSON), **1.2.0** (SQLite),
+and **2.0.22** (SQLite projections). Detection is schema-based; SQLite takes
+precedence over leftover migrated JSON. Assistant/step usage, inherited fork
+history, and utility aggregates are not counted twice. Variant names are not
+inferred effort; recorded output-token semantics may differ by provider/version.
 
-Range is the minimum and maximum individual valid stream TPS, rather than an
-interval around the weighted average. A rate above 200 TPS can be valid when its
-tokens and timing agree. Streams shorter than one second, above 400 TPS, or with
-unconfirmed boundaries are excluded. Codex repeated cumulative usage snapshots
-are ignored so old tokens cannot inflate a later reasoning item's rate. Claude's
-single-record `turn-span` fallback includes prompt-to-response latency and should
-be treated as an estimate, not pure streaming speed.
-
-All JSON views include the same optional fields: stats `recent_streams` and
-`recent_sessions`, `ps` entries, timeline session objects, and individual events
-(including window exports). Session fields describe the latest recorded settings;
-events preserve their own settings. Each stats summary and model window includes
-`configurations`, the distinct settings of valid streams in that window. Its
-singular metadata fields are populated only when all configurations agree on that
-field; mixed or missing values are `null`.
-
-For example:
-
-```json
-{
-  "model": "gpt-6.1-sol",
-  "reasoning_effort": "medium",
-  "service_tier": "priority",
-  "speed": null,
-  "speed_mode": "fast"
-}
-```
-
-### Oh My Pi (`omp`)
-
-OMP support reads main and nested subagent JSONL sessions, without opening its
-configuration databases or changing telemetry. Each worker is a separate session,
-identified by its recorded header UUID rather than its filename:
-
-```bash
-tokenmon stats omp --all
-tokenmon ps omp --all
-tokenmon logs omp --all                   # latest main or worker session
-tokenmon stats omp -w
-tokenmon logs <session-uuid> --agent omp -f --all
-tokenmon stats omp --home ~/.omp/agent --all --json
-```
-
-`--home` points to the data directory containing `sessions`, not `~/.omp` itself.
-It overrides `PI_CODING_AGENT_DIR`. Without either override, discovery uses
-`PI_CONFIG_DIR` (default `.omp`), `OMP_PROFILE` (or `PI_PROFILE`), and existing
-migrated `XDG_DATA_HOME/omp` data/profile directories on Linux and macOS.
-Main sessions and workers share the normal `--tasks` discovery limit.
-
-Output tokens come from assistant `usage.output`; task-tool aggregate usage and
-inherited parent messages are not counted again. Effort comes from recorded
-effective `thinkingLevel` settings, and provider-family tier maps supply recorded
-request mode when routing is known. Historical events keep their own settings.
-
-`omp-ttft` measures `(duration - ttft) / 1000` seconds, anchored at recorded
-completion. It is the first-output-item-to-completion window, **not guaranteed
-first-text-token decoding time**. Missing/invalid timing, tool-first or empty
-output boundaries, and incomplete responses remain excluded from TPS while
-session activity stays available. Malformed records are skipped independently;
-an unreadable source does not discard other sessions, and follow retains its
-baseline through temporary source failures.
-
-### Pi (`pi`)
-
-Pi support reads native JSONL session journals for session activity, output-token
-totals, historical model/effort settings, and timelines. Pi does not need to be
-installed or running on the monitoring machine; existing or copied logs suffice.
-
-```bash
-tokenmon stats pi --all
-tokenmon ps pi --all
-tokenmon logs pi --all                    # latest Pi session
-tokenmon stats pi -w
-tokenmon logs <session-uuid> --agent pi -f --all
-tokenmon ps pi --home ~/.pi/agent --all --json
-```
-
-`--home` is the agent data directory containing `sessions`, not `~/.pi` itself.
-It overrides `PI_CODING_AGENT_DIR`; otherwise the native default is `~/.pi/agent`.
-OMP profiles, `PI_CONFIG_DIR`, and OMP's XDG migrations do not change Pi's default.
-Native model-change records keep provider and model ID separate. Recorded
-`providerThinkingLevel` takes precedence over response `thinkingLevel`, then
-inherited thinking-level settings. Missing tier/speed metadata remains unknown.
-
-**Native Pi journals do not record confirmed generation timing.** The response
-timestamp is not a first-token timestamp; journal completion minus request start
-is not decoding time. Responses remain in excluded-stream counts as
-`pi-unconfirmed`, with **no TPS estimate**. Session output-token totals remain
-available; throughput summaries count only valid measured streams. Assistant
-timeline events use the journal completion timestamp. Malformed records and
-unreadable sessions are isolated, and follow stays pinned through read failures.
+All adapters include separately persisted worker sessions within their data roots.
+Claude worker IDs are `agent-<id>@<project>/<parent>`; Codex uses native thread IDs
+and recorded ownership ordinals to exclude copied worker history. Legacy Codex
+worker forks without that boundary are excluded rather than double-counted.
+Antigravity includes unindexed worker databases; opaque embedded workers and
+copied-fork ownership cannot be decoded from the available metadata.
 
 ### Active & Recent Sessions (`sessions`, `ps`, `ls`)
 
-See all recent sessions, message counts, tool runs, and idle status:
+List sessions from the last **7 days** by default, with message counts, tool runs,
+and idle status. Override with `--window`, or use `--all` for full history:
 
 ```bash
 # List recent sessions

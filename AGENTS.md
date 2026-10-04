@@ -143,7 +143,8 @@ baseline through temporary read failures. Live modes reject `--json`; follow als
 rejects batch `--window` exports. Ctrl+C stops CLI live modes or returns shell watch
 to the prompt. Keep live CLI imports independent of the shell and `readline`.
 
-The default collection cutoff is 30 days. `--window` selects a window; `--all` or
+The CLI default collection cutoff is 7 days for `sessions`/`ps`/`ls` and 30 days for
+stats and timelines. `--window` selects a window; `--all` or
 `--window all` removes the cutoff, but session limits still apply. Positional agent
 `all` selects detected adapter classes; it is separate from history flag `--all`.
 Stats recent-session previews currently collect independently of the span cutoff.

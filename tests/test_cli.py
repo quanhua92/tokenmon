@@ -5,11 +5,13 @@ import io
 import os
 import select
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from itertools import product
@@ -919,6 +921,247 @@ class TestPiCLIIntegration(unittest.TestCase):
                           for session in sessions},
                          {("pi", "pi-native-id", 120), ("omp", "omp-native-id", 80)})
         self.assertEqual(len(sessions), 2)
+
+
+class TestOpenCodeCLIIntegration(unittest.TestCase):
+    """Exercise native OpenCode projections through actual CLI subprocesses."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.root = Path(self.temp_dir.name)
+        self.started_at = datetime(2026, 10, 3, 10, tzinfo=timezone.utc).timestamp()
+        self.env = os.environ.copy()
+        self.env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        self.env["PYTHONDONTWRITEBYTECODE"] = "1"
+        # Explicit --home must win even when native environment points elsewhere.
+        self.env["OPENCODE_DB"] = str(self.root / "unrelated.db")
+        self.env["XDG_DATA_HOME"] = str(self.root / "unrelated-data")
+
+    def milliseconds(self, offset):
+        return int((self.started_at + offset) * 1000)
+
+    def write_v2(self, root):
+        root.mkdir()
+        with closing(sqlite3.connect(root / "opencode.db")) as conn:
+            conn.executescript("""
+                CREATE TABLE session_v2 (
+                    id TEXT PRIMARY KEY, directory TEXT, time_created INTEGER,
+                    time_updated INTEGER, model TEXT, fork_session_id TEXT, fork_boundary TEXT
+                );
+                CREATE TABLE session_message (
+                    id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+                    time_created INTEGER, time_updated INTEGER, data TEXT
+                );
+            """)
+            for session_id, offset, tokens in (
+                    ("opencode-main-id", 0, 120), ("opencode-worker-id", 20, 80)):
+                model = {"id": "native-test", "providerID": "openai", "variant": "arbitrary-selector"}
+                conn.execute("INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, NULL, NULL)", (
+                    session_id, "/synthetic/opencode-project", self.milliseconds(offset),
+                    self.milliseconds(offset + 7), json.dumps(model)))
+                messages = [
+                    ("user", {"time": {"created": self.milliseconds(offset + 1)},
+                              "text": "synthetic prompt"}),
+                    ("assistant", {
+                        "time": {"created": self.milliseconds(offset + 2),
+                                 "streamed": self.milliseconds(offset + 6),
+                                 "completed": self.milliseconds(offset + 7)},
+                        "model": model, "finish": "stop",
+                        "tokens": {"output": tokens, "reasoning": 9999, "input": 99999,
+                                   "cache": {"read": 99999, "write": 99999}},
+                        "content": [{"type": "text", "text": "synthetic response"},
+                                    {"type": "reasoning", "text": "synthetic reasoning",
+                                     "time": {"created": self.milliseconds(offset + 2),
+                                              "completed": self.milliseconds(offset + 4)}}],
+                    }),
+                ]
+                for seq, (kind, data) in enumerate(messages, 1):
+                    conn.execute("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)", (
+                        session_id + "-" + kind, session_id, kind, seq,
+                        self.milliseconds(offset + seq), self.milliseconds(offset + 7),
+                        json.dumps(data)))
+            conn.commit()
+
+    def write_v1(self, root):
+        for session_id, offset, tokens in (
+                ("opencode-main-id", 0, 120), ("opencode-worker-id", 20, 80)):
+            objects = {
+                root / "storage" / "session" / "project" / (session_id + ".json"): {
+                    "id": session_id, "directory": "/synthetic/opencode-project",
+                    "time": {"created": self.milliseconds(offset),
+                             "updated": self.milliseconds(offset + 7)},
+                },
+            }
+            user_id, assistant_id = session_id + "-user", session_id + "-assistant"
+            objects[root / "storage" / "message" / session_id / (user_id + ".json")] = {
+                "id": user_id, "sessionID": session_id, "role": "user",
+                "time": {"created": self.milliseconds(offset + 1)},
+                "model": {"providerID": "openai", "modelID": "native-test"},
+                "variant": "arbitrary-selector",
+            }
+            objects[root / "storage" / "message" / session_id / (assistant_id + ".json")] = {
+                "id": assistant_id, "sessionID": session_id, "role": "assistant",
+                "parentID": user_id, "providerID": "openai", "modelID": "native-test",
+                "variant": "arbitrary-selector", "finish": "stop",
+                "time": {"created": self.milliseconds(offset + 2),
+                         "completed": self.milliseconds(offset + 7)},
+                "tokens": {"output": tokens, "reasoning": 9999, "input": 99999,
+                           "cache": {"read": 99999, "write": 99999}},
+                "path": {"cwd": "/synthetic/opencode-project"},
+            }
+            for message_id, text in ((user_id, "synthetic prompt"),
+                                     (assistant_id, "synthetic response")):
+                part_id = message_id + "-text"
+                objects[root / "storage" / "part" / message_id / (part_id + ".json")] = {
+                    "id": part_id, "messageID": message_id, "sessionID": session_id,
+                    "type": "text", "text": text,
+                    "time": {"start": self.milliseconds(offset + 7),
+                             "end": self.milliseconds(offset + 7)},
+                }
+            for path, value in objects.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(value), encoding="utf-8")
+
+    def run_cli(self, root, arguments, include_all=True):
+        result = subprocess.run(
+            [sys.executable, "-m", "tokenmon"] + arguments +
+            ["--home", str(root), "--json"] + (["--all"] if include_all else []),
+            capture_output=True, text=True, env=self.env, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        value = json.loads(result.stdout)
+        self.assertNotIn("event_id", json.dumps(value))
+        return value
+
+    def assert_unknown_metadata(self, value):
+        for key in ("reasoning_effort", "service_tier", "speed", "speed_mode"):
+            self.assertIn(key, value)
+            self.assertIsNone(value[key], key)
+
+    def test_native_generations_keep_session_tokens_but_never_report_decoding_tps(self):
+        for generation, writer in (("v2", self.write_v2), ("v1", self.write_v1)):
+            with self.subTest(generation=generation):
+                root = self.root / generation
+                writer(root)
+                for command in (["stats", "opencode"], ["opencode"]):
+                    with self.subTest(command=command):
+                        data = self.run_cli(root, command)
+                        self.assertEqual(set(data), {
+                            "meta", "summary", "models", "recent_streams", "recent_sessions"})
+                        self.assertEqual(data["meta"]["agents"], ["opencode"])
+                        self.assertEqual(data["meta"]["inspected_spans"], 2)
+                        summary = data["summary"]["all"]
+                        self.assertEqual(summary["total_spans"], 2)
+                        self.assertEqual(summary["valid_spans"], 0)
+                        self.assertEqual(summary["excluded_spans"], 2)
+                        self.assertEqual(summary["total_tokens"], 0)
+                        self.assertEqual(summary["total_duration_seconds"], 0)
+                        self.assertEqual(summary["configurations"], [])
+                        for field in ("weighted_tps", "median_tps", "min_tps", "max_tps"):
+                            self.assertIsNone(summary[field])
+                        self.assert_unknown_metadata(summary)
+                        self.assertEqual(set(data["models"]), {"openai/native-test"})
+                        self.assertEqual(data["models"]["openai/native-test"]["all"], summary)
+                        self.assertEqual(data["recent_streams"], [])
+                        self.assertEqual({card["session_id"]: card["total_tokens"]
+                                          for card in data["recent_sessions"]},
+                                         {"opencode-main-id": 120, "opencode-worker-id": 80})
+                        for card in data["recent_sessions"]:
+                            self.assert_unknown_metadata(card)
+
+    def test_ps_latest_shorthand_and_id_prefix_expose_native_public_timelines(self):
+        for generation, writer in (("v2", self.write_v2), ("v1", self.write_v1)):
+            with self.subTest(generation=generation):
+                root = self.root / generation
+                writer(root)
+                sessions = self.run_cli(root, ["ps", "opencode"])
+                self.assertEqual([session["session_id"] for session in sessions],
+                                 ["opencode-worker-id", "opencode-main-id"])
+                self.assertEqual([session["total_tokens"] for session in sessions], [80, 120])
+                for session in sessions:
+                    self.assertEqual(session["agent"], "opencode")
+                    self.assertEqual(session["model"], "openai/native-test")
+                    self.assertEqual(session["cwd"], "/synthetic/opencode-project")
+                    self.assertEqual(session["user_messages"], 1)
+                    self.assertEqual(session["assistant_messages"], 1)
+                    self.assert_unknown_metadata(session)
+                selections = [
+                    (["logs", "opencode"], "opencode-worker-id", 80),
+                    (["logs", "latest", "--agent", "opencode"], "opencode-worker-id", 80),
+                    (["logs", "opencode-main", "--agent", "opencode"], "opencode-main-id", 120),
+                ]
+                for arguments, session_id, tokens in selections:
+                    with self.subTest(arguments=arguments):
+                        timeline = self.run_cli(root, arguments)
+                        self.assertEqual(timeline["session_id"], session_id)
+                        self.assertEqual(timeline["total_tokens"], tokens)
+                        self.assertEqual(timeline["model"], "openai/native-test")
+                        self.assert_unknown_metadata(timeline)
+                        assistants = [event for event in timeline["events"]
+                                      if event["kind"] == "assistant_message"]
+                        self.assertEqual(len(assistants), 1)
+                        self.assertEqual(assistants[0]["tokens"], tokens)
+                        self.assertIsNone(assistants[0]["duration"])
+                        self.assertEqual(sum(event["tokens"] or 0 for event in timeline["events"]), tokens)
+                        for event in timeline["events"]:
+                            self.assertEqual(set(event), {
+                                "timestamp", "kind", "turn_id", "summary", "tokens", "duration",
+                                "reasoning_effort", "service_tier", "speed", "speed_mode"})
+                            self.assert_unknown_metadata(event)
+
+    def test_exact_session_bypasses_recent_limit_without_bypassing_cutoff(self):
+        root = self.root / "exact"
+        self.started_at = time.time() - 3600
+        self.write_v2(root)
+        timeline = self.run_cli(root, [
+            "logs", "opencode-main-id", "--agent", "opencode", "--tasks", "1"])
+        self.assertEqual(timeline["session_id"], "opencode-main-id")
+        self.assertEqual(timeline["total_tokens"], 120)
+        result = subprocess.run(
+            [sys.executable, "-m", "tokenmon", "logs", "opencode-main-id",
+             "--agent", "opencode", "--tasks", "1", "--window", "30m",
+             "--home", str(root), "--json"],
+            capture_output=True, text=True, env=self.env, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+
+    def test_session_aliases_default_to_seven_days_but_other_commands_keep_thirty(self):
+        root = self.root / "session-window"
+        self.started_at = time.time() - 8 * 86400
+        self.write_v2(root)
+        shift = 7 * 86400 * 1000
+        with closing(sqlite3.connect(root / "opencode.db")) as conn, conn:
+            conn.execute(
+                "UPDATE session_v2 SET time_created = time_created + ?, "
+                "time_updated = time_updated + ? WHERE id = ?",
+                (shift, shift, "opencode-worker-id"))
+            rows = conn.execute(
+                "SELECT id, data FROM session_message WHERE session_id = ?",
+                ("opencode-worker-id",)).fetchall()
+            for message_id, raw in rows:
+                data = json.loads(raw)
+                for key in data["time"]:
+                    data["time"][key] += shift
+                for part in data.get("content", []):
+                    for key in part.get("time", {}):
+                        part["time"][key] += shift
+                conn.execute("UPDATE session_message SET data = ? WHERE id = ?",
+                             (json.dumps(data), message_id))
+        for alias in ("ps", "sessions", "ls"):
+            with self.subTest(alias=alias):
+                sessions = self.run_cli(root, [alias, "opencode"], include_all=False)
+                self.assertEqual([s["session_id"] for s in sessions], ["opencode-worker-id"])
+        for override in (["--window", "30d"], ["--window", "all"], ["--all"]):
+            with self.subTest(override=override):
+                sessions = self.run_cli(root, ["ps", "opencode", *override], include_all=False)
+                self.assertEqual({s["session_id"] for s in sessions},
+                                 {"opencode-main-id", "opencode-worker-id"})
+        stats = self.run_cli(root, ["stats", "opencode"], include_all=False)
+        self.assertEqual(stats["meta"]["inspected_spans"], 2)
+        older = self.run_cli(root, ["logs", "opencode-main-id", "--agent", "opencode"],
+                             include_all=False)
+        self.assertEqual(older["total_tokens"], 120)
 
 
 if __name__ == "__main__":
