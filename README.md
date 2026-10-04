@@ -278,3 +278,16 @@ separate entry points preserve native roots and timing semantics.
 ## License
 
 MIT
+
+## Copied History and TPS
+
+Workers and forked sessions may inherit earlier assistant outputs. **Ownership**
+means counting those outputs only under the session that generated them—not again
+under a child that copied them.
+
+For example, 1,000 main-session tokens in 10s plus 200 worker tokens in 4s gives
+**1,200 tokens and 85.7 weighted TPS**. Counting the copied main output again,
+including its duration, gives **2,200 tokens and 91.7 TPS**: the main response gets
+too much weight. Duplicating every response equally leaves weighted TPS unchanged,
+but totals are still wrong. TokenMon uses recorded ownership boundaries where
+available; see Agent Data above for format limitations.
