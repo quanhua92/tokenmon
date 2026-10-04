@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.5] — 2026-10-04
 
 - Determine inherited OMP assistant ownership from the recorded request start, recovering it from completion and duration when needed; exclude child output without request-boundary evidence.
 - Recognize native OMP `session_init` workers during source detection and keep them separate from Pi sessions in shared roots.
@@ -62,6 +62,7 @@ Initial public release of TokenMon.
 - Read agent logs and SQLite databases without modifying them.
 - Add CI checks and manual PyPI trusted publishing.
 
+[0.1.5]: https://github.com/quanhua92/tokenmon/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/quanhua92/tokenmon/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/quanhua92/tokenmon/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/quanhua92/tokenmon/compare/v0.1.1...v0.1.2
