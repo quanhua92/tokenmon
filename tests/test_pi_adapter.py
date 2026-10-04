@@ -564,6 +564,18 @@ class TestPiAdapter(unittest.TestCase):
         self.assertIsNone(adapter.read_session("scout"))
         self.assertIsNone(adapter.read_session("absent"))
 
+    def test_exact_session_lookup_is_not_limited_to_recent_64_sources(self):
+        for index in range(65):
+            self.write_session(canonical_records(f"session-{index}", tokens=index + 1),
+                               f"project/file-{index}.jsonl", mtime=100 + index)
+        adapter = PiAdapter(self.root)
+        oldest = adapter.read_session("session-0")
+        self.assertEqual(oldest.session_id, "session-0")
+        self.assertEqual(oldest.total_tokens, 1)
+        self.write_session(canonical_records("session-0", tokens=999),
+                           "project/replacement.jsonl", mtime=1000)
+        self.assertEqual(adapter.read_session("session-0").total_tokens, 1)
+
     def test_pi_and_omp_native_sources_are_isolated_in_shared_root(self):
         self.write_session(canonical_records(), "pi.jsonl", mtime=100)
         omp_response = assistant(tokens=80, model="omp-test-model", duration=5000, ttft=1000,
@@ -579,6 +591,29 @@ class TestPiAdapter(unittest.TestCase):
         self.assertEqual([item.session_id for item in omp.collect_sessions()], ["omp-main"])
         self.assertTrue(omp.collect()[0].is_valid)
         self.assertFalse(pi.collect()[0].is_valid)
+
+    def test_omp_session_init_workers_are_isolated_from_pi_in_shared_root(self):
+        self.write_session(canonical_records(), "pi.jsonl", mtime=100)
+        response = assistant(tokens=80, duration=5000, ttft=1000,
+                             completedAt=(EPOCH + 7) * 1000)
+        response["message"].pop("provider")
+        response["message"].pop("model")
+        self.write_session([
+            header("omp-worker"),
+            entry("session_init", "init", resolvedModel="openai/seed-model",
+                  task="synthetic prompt", tools=[]),
+            user(parent="init"), response,
+        ], "nested/omp-worker.jsonl", mtime=200)
+        pi = PiAdapter(self.root)
+        omp = OMPAdapter(self.root)
+        self.assertTrue(pi.detect())
+        self.assertTrue(omp.detect())
+        self.assertEqual([item.session_id for item in pi.collect_sessions()], ["pi-main"])
+        self.assertEqual([item.session_id for item in omp.collect_sessions()], ["omp-worker"])
+        span = omp.collect()[0]
+        self.assertEqual((span.model, span.tokens, span.is_valid), ("openai/seed-model", 80, True))
+        self.assertIsNone(PiAdapter(self.root).read_session("omp-worker"))
+        self.assertEqual(OMPAdapter(self.root).read_session("omp-worker").total_tokens, 80)
 
     def test_registry_detection_counts_excluded_pi_completion_as_activity(self):
         self.write_session(canonical_records())

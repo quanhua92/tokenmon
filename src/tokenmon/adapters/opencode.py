@@ -197,6 +197,43 @@ class OpenCodeAdapter(BaseAdapter):
             logger.warning("OpenCodeAdapter: cannot detect source: %s", exc)
             return False
 
+    def _json_session_paths(self) -> list[Path]:
+        files = []
+        directory = self.root / "storage" / "session"
+        for parent, _, names in os.walk(directory, followlinks=False):
+            for name in names:
+                if not name.startswith(".") and name.endswith(".json"):
+                    path = Path(parent) / name
+                    try:
+                        if path.is_file():
+                            files.append((-path.stat().st_mtime, str(path), path))
+                    except OSError:
+                        continue
+        files.sort(key=lambda item: item[:2])
+        return [item[2] for item in files]
+
+    def _find_source(self, session_id: str) -> _Source | None:
+        for path in self._database_paths():
+            try:
+                with closing(open_ro_db(path)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    kind = _layout(_tables(conn))
+                    if kind is None:
+                        continue
+                    table = "session_v2" if kind == "v2" else "session"
+                    row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (session_id,)).fetchone()
+                    if row is not None:
+                        return _Source(session_id, kind, path, _sql_header(row))
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                logger.debug("OpenCodeAdapter: cannot find session %s in %s: %s", session_id, path, exc)
+        if _file_key(session_id) != session_id:
+            return None
+        for path in self._json_session_paths():
+            header = _json_file(path)
+            if _file_key(header.get("id")) == session_id:
+                return _Source(session_id, "json", path, header)
+        return None
+
     def _discover(self, max_sessions: int) -> list[_Source]:
         if max_sessions <= 0:
             return []
@@ -219,19 +256,7 @@ class OpenCodeAdapter(BaseAdapter):
                             candidates[session_id] = _Source(session_id, kind, path, header)
             except (OSError, sqlite3.Error, ValueError) as exc:
                 logger.debug("OpenCodeAdapter: cannot discover %s: %s", path, exc)
-        directory = self.root / "storage" / "session"
-        files = []
-        for parent, _, names in os.walk(directory, followlinks=False):
-            for name in names:
-                if not name.startswith(".") and name.endswith(".json"):
-                    path = Path(parent) / name
-                    try:
-                        if path.is_file():
-                            files.append((-path.stat().st_mtime, str(path), path))
-                    except OSError:
-                        continue
-        files.sort(key=lambda item: item[:2])
-        for _, _, path in files[:max_sessions]:
+        for path in self._json_session_paths()[:max_sessions]:
             header = _json_file(path)
             session_id = _file_key(header.get("id"))
             if session_id is not None and session_id not in candidates:
@@ -472,11 +497,16 @@ class OpenCodeAdapter(BaseAdapter):
 
     def read_session(self, session_id: str) -> SessionTimeline | None:
         source = self._session_sources.get(session_id)
-        if source is None:
-            return super().read_session(session_id)
         try:
+            if source is None:
+                source = self._find_source(session_id)
+                if source is None:
+                    return None
             parsed = self._read_source(source)
         except Exception as exc:
             logger.debug("OpenCodeAdapter: cannot refresh session %s: %s", session_id, exc)
             return None
-        return parsed[1] if parsed is not None and parsed[1].session_id == session_id else None
+        if parsed is None or parsed[1].session_id != session_id:
+            return None
+        self._session_sources[session_id] = source
+        return parsed[1]

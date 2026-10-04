@@ -155,6 +155,11 @@ worker forks without that boundary are excluded rather than double-counted.
 Antigravity includes unindexed worker databases; opaque embedded workers and
 copied-fork ownership cannot be decoded from the available metadata.
 
+OMP uses recorded request starts to exclude inherited assistant output, recovering
+the start from completion and duration when necessary. Parented output without
+request-boundary evidence is excluded. Native OMP `session_init` workers remain
+distinct from Pi sessions even when both share a data root.
+
 ### Active & Recent Sessions (`sessions`, `ps`, `ls`)
 
 List sessions from the last **7 days** by default, with message counts, tool runs,
@@ -233,6 +238,11 @@ Available commands inside the shell:
 (tokenmon) watch 2.0 1d       # metrics, recent streams, and session cards (Ctrl+C to stop)
 (tokenmon) help               # list all commands
 ```
+
+Shell timelines prefer exact session IDs over prefix matches and can open exact
+IDs outside the recent-session list. CLI exact-ID lookup also bypasses the
+`--tasks` discovery limit; history cutoffs still apply, so use `--all` for older
+sessions. Prefix matching searches only the discovered recent sessions.
 
 ---
 

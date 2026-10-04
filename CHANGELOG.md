@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Determine inherited OMP assistant ownership from the recorded request start, recovering it from completion and duration when needed; exclude child output without request-boundary evidence.
+- Recognize native OMP `session_init` workers during source detection and keep them separate from Pi sessions in shared roots.
+- Resolve uncached exact Pi, OMP, and OpenCode session IDs beyond recent discovery limits while preserving pinned sources through read failures.
+- Prefer exact IDs in interactive timelines and resolve sessions outside the shell's recent-session list before falling back to prefix matching.
+
 ## [0.1.4] — 2026-10-04
 
 - Format session Status idle times as hours, minutes, and seconds across session lists, cards, and timelines; include days for durations of 24 hours or more.

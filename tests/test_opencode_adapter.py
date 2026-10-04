@@ -372,6 +372,7 @@ class TestOpenCodeAdapter(unittest.TestCase):
                 leftover.session()
                 leftover.user()
                 leftover.assistant(output=999)
+                self.assertEqual(OpenCodeAdapter(store.root).read_session("s").total_tokens, 120)
                 self.assertEqual([s.tokens for s in adapter.collect()], [120])
                 self.assertEqual([s.total_tokens for s in adapter.collect_sessions()], [120])
 
@@ -395,6 +396,56 @@ class TestOpenCodeAdapter(unittest.TestCase):
                 self.assertIsNone(adapter.read_session("s"))
                 hidden.rename(source)
                 self.assertEqual(adapter.read_session("s").total_tokens, 130)
+
+    def test_uncached_exact_oldest_session_beyond_recent_limit_stays_pinned(self):
+        for format in FORMATS:
+            with self.subTest(format=format):
+                store, adapter = self.basic(format)
+                source = store.db if format != "json" else store.root / "storage/session/project/s.json"
+                if format == "json":
+                    os.utime(source, (T / 1000, T / 1000))
+                for index in range(64):
+                    timestamp = T + (index + 1) * 20_000
+                    path = store.session("new-" + str(index), created=timestamp, updated=timestamp + 10_000)
+                    if format == "json":
+                        os.utime(path, (timestamp / 1000, timestamp / 1000))
+                timeline = adapter.read_session("s")
+                self.assertEqual(timeline.session_id, "s")
+                self.assertEqual(timeline.total_tokens, 120)
+                store.assistant(output=130)
+                self.assertEqual(adapter.read_session("s").total_tokens, 130)
+                hidden = source.with_suffix(source.suffix + ".hidden")
+                source.rename(hidden)
+                self.assertIsNone(adapter.read_session("s"))
+                hidden.rename(source)
+                self.assertEqual(adapter.read_session("s").total_tokens, 130)
+
+    def test_uncached_sqlite_exact_id_is_parameterized_and_isolated(self):
+        for format in ("v1", "v2"):
+            with self.subTest(format=format):
+                store, _ = self.basic(format)
+                session_id = "quoted' OR 1=1 --"
+                store.session(session_id)
+                store.assistant("quoted-a", session=session_id, output=45)
+                (store.root / "opencode-broken.db").write_bytes(b"not a sqlite database")
+                adapter = OpenCodeAdapter(store.root)
+                self.assertIsNone(adapter.read_session("absent' OR 1=1 --"))
+                timeline = adapter.read_session(session_id)
+                self.assertEqual(timeline.session_id, session_id)
+                self.assertEqual(timeline.total_tokens, 45)
+
+    def test_uncached_json_header_lookup_is_exact_and_rejects_substitution(self):
+        store, adapter = self.basic("json")
+        source = store.root / "storage/session/project/s.json"
+        renamed = source.with_name("different-filename.json")
+        source.rename(renamed)
+        self.assertEqual(adapter.read_session("s").total_tokens, 120)
+        original = renamed.read_text(encoding="utf-8")
+        store._json(renamed, {"id": "replacement", "time": {"created": T, "updated": T + 10_000}})
+        store.session()
+        self.assertIsNone(adapter.read_session("s"))
+        renamed.write_text(original, encoding="utf-8")
+        self.assertEqual(adapter.read_session("s").total_tokens, 120)
 
     def test_broken_database_does_not_hide_valid_separate_database(self):
         root = self.root / "databases"
@@ -585,24 +636,26 @@ class TestOpenCodeAdapter(unittest.TestCase):
         self.assertIsNone(adapter.read_session("../outside"))
 
     def test_exact_database_source_remains_pinned_when_discovery_changes(self):
-        root = self.root / "pinned-databases"
-        original = NativeStore(root, "v2", "opencode-original.db")
-        original.session()
-        original.user()
-        original.assistant(output=120)
-        adapter = OpenCodeAdapter(root)
-        self.assertEqual(adapter.collect_sessions(max_sessions=1)[0].total_tokens, 120)
-        newer = NativeStore(root, "v2", "opencode-new.db")
-        newer.session(created=T + 20_000, updated=T + 40_000)
-        newer.user(created=T + 21_000)
-        newer.assistant(created=T + 22_000, completed=T + 26_000, output=900)
-        original.assistant(output=130)
-        self.assertEqual(adapter.read_session("s").total_tokens, 130)
-        hidden = original.db.with_suffix(".hidden")
-        original.db.rename(hidden)
-        self.assertIsNone(adapter.read_session("s"))
-        hidden.rename(original.db)
-        self.assertEqual(adapter.read_session("s").total_tokens, 130)
+        for format in ("v1", "v2"):
+            with self.subTest(format=format):
+                root = self.root / ("pinned-databases-" + format)
+                original = NativeStore(root, format, "opencode-original.db")
+                original.session()
+                original.user()
+                original.assistant(output=120)
+                adapter = OpenCodeAdapter(root)
+                self.assertEqual(adapter.read_session("s").total_tokens, 120)
+                newer = NativeStore(root, format, "opencode-new.db")
+                newer.session(created=T + 20_000, updated=T + 40_000)
+                newer.user(created=T + 21_000)
+                newer.assistant(created=T + 22_000, completed=T + 26_000, output=900)
+                original.assistant(output=130)
+                self.assertEqual(adapter.read_session("s").total_tokens, 130)
+                hidden = original.db.with_suffix(".hidden")
+                original.db.rename(hidden)
+                self.assertIsNone(adapter.read_session("s"))
+                hidden.rename(original.db)
+                self.assertEqual(adapter.read_session("s").total_tokens, 130)
 
 
 if __name__ == "__main__":

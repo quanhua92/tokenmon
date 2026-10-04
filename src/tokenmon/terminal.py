@@ -118,21 +118,33 @@ Usage: timeline [SESSION_ID|latest]
 Alias: t"""
         target = arg.strip() or "latest"
         timelines = self._get_timelines(force=True)
-        if not timelines:
-            print("No sessions found.")
-            return
-
         selected = None
         if target == "latest":
+            if not timelines:
+                print("No sessions found.")
+                return
             selected = timelines[0]
         else:
-            for t in timelines:
-                if t.session_id.startswith(target) or target in t.session_id:
-                    selected = t
-                    break
+            selected = next((t for t in timelines if t.session_id == target), None)
+            if selected is None:
+                for adapter in self.adapters:
+                    try:
+                        candidate = adapter.read_session(target)
+                    except Exception as e:
+                        print(f"Warning: Adapter '{adapter.name}' failed to read session: {e}", file=sys.stderr)
+                        continue
+                    if candidate is not None and candidate.session_id == target:
+                        selected = candidate
+                        break
+            if selected is None:
+                selected = next((t for t in timelines
+                                 if t.session_id.startswith(target) or target in t.session_id), None)
 
-        if not selected:
-            print(f"Error: Session '{target}' not found. Use 'sessions' to see available IDs.")
+        if selected is None:
+            if not timelines:
+                print("No sessions found.")
+            else:
+                print(f"Error: Session '{target}' not found. Use 'sessions' to see available IDs.")
             return
 
         print()

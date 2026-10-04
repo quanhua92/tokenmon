@@ -17,8 +17,8 @@ from tokenmon.adapters.claude import parse_iso_timestamp
 from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, create_span, generation_metadata
 
 
-def _discover_session_files(root: Path, max_sessions: int) -> list[Path]:
-    if max_sessions <= 0:
+def _discover_session_files(root: Path, max_sessions: int | None) -> list[Path]:
+    if max_sessions is not None and max_sessions <= 0:
         return []
     directory = root / "sessions"
     candidates: list[tuple[float, str, Path]] = []
@@ -42,6 +42,24 @@ def _string(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _read_session_id(path: Path) -> str | None:
+    """Read only through the first usable native header for exact discovery."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    entry = json.loads(line)
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(entry, dict) and entry.get("type") == "session":
+                    session_id = _string(entry.get("id"))
+                    if session_id is not None:
+                        return session_id
+    except OSError:
+        pass
+    return None
+
+
 def _entry_agent(entry: dict) -> str | None:
     """Identify only explicit native schema markers, never model names."""
     if entry.get("type") == "model_change":
@@ -49,6 +67,8 @@ def _entry_agent(entry: dict) -> str | None:
             return "omp"
         if _string(entry.get("provider")) and _string(entry.get("modelId")):
             return "pi"
+    if entry.get("type") == "session_init" and _string(entry.get("resolvedModel")) is not None:
+        return "omp"
     return None
 
 
@@ -262,14 +282,24 @@ def _read_journal(path: Path, agent: str) -> _Journal | None:
                         if at is None:
                             raw_start = None
                             at = parse_iso_timestamp(entry.get("timestamp"))
-                        owned = not parented or (at is not None and header_at is not None and at >= header_at)
-                        if role == "user" and owned:
-                            current = replace(current, prompt=source_id)
                         duration = _number(message.get("duration")) if agent == "omp" else None
                         ended_at = _epoch_seconds(_number(message.get("completedAt"))) if agent == "omp" else None
                         if ended_at is None and raw_start is not None and duration is not None and duration >= 0:
                             ended_at = _epoch_seconds(raw_start + duration)
                         confirmed_completion = ended_at is not None
+                        ownership_at = at
+                        if role == "assistant" and agent == "omp" and raw_start is None:
+                            # Journal timestamps may describe a copied response's completion,
+                            # not the request boundary that determines child ownership.
+                            ownership_at = None
+                            if ended_at is not None and duration is not None and duration >= 0:
+                                ownership_at = _epoch_seconds(ended_at * 1000 - duration)
+                                at = ownership_at
+                        owned = not parented or (
+                            ownership_at is not None and header_at is not None and ownership_at >= header_at
+                        )
+                        if role == "user" and owned:
+                            current = replace(current, prompt=source_id)
                         if ended_at is None:
                             ended_at = parse_iso_timestamp(entry.get("timestamp"))
                             if ended_at is None:
@@ -482,15 +512,23 @@ class _PiJSONLAdapter(BaseAdapter):
         return timelines
 
     def read_session(self, session_id: str) -> SessionTimeline | None:
-        path = self._timeline_sources.get(session_id)
-        if path is None:
-            return super().read_session(session_id)
-        try:
-            parsed = self._parse_session(path)
-        except Exception as exc:
-            self._logger.warning("%sAdapter: cannot refresh session %s: %s", self.name, session_id, exc)
-            return None
-        if (parsed is None or parsed[1].session_id != session_id
-                or parsed[2] not in (None, self.name)):
-            return None
-        return parsed[1]
+        pinned = self._timeline_sources.get(session_id)
+        paths = [pinned] if pinned is not None else _discover_session_files(self.root, None)
+        agents = _probe_source_agents(self.root) if pinned is None else set()
+        unknown_owner = next(iter(agents)) if len(agents) == 1 else self._default_source_agent
+        for path in paths:
+            if pinned is None and _read_session_id(path) != session_id:
+                continue
+            try:
+                parsed = self._parse_session(path)
+            except Exception as exc:
+                self._logger.warning("%sAdapter: cannot refresh session %s: %s", self.name, session_id, exc)
+                continue
+            if (parsed is None or parsed[1].session_id != session_id
+                    or parsed[2] not in (None, self.name)):
+                continue
+            if pinned is None and parsed[2] is None and agents and unknown_owner != self.name:
+                continue
+            self._timeline_sources[session_id] = path
+            return parsed[1]
+        return None

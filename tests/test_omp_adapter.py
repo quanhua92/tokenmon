@@ -236,6 +236,35 @@ class TestOMPAdapter(unittest.TestCase):
         self.assertEqual(timeline.created_at, EPOCH + 10)
         self.assertFalse(any(event.event_id.startswith("entry:copied") for event in timeline.events))
 
+    def test_fork_recovers_request_start_before_attributing_copied_output(self):
+        response = assistant("copied", seconds=5, duration=15000,
+                             completedAt=(EPOCH + 20) * 1000)
+        response["message"].pop("timestamp")
+        response["timestamp"] = iso(20)
+        self.write_session([header("parent"), response])
+        self.write_session([header("child", 10, parentSession="parent"), response],
+                           "project/child.jsonl")
+        adapter = OMPAdapter(self.root)
+        spans = adapter.collect()
+        self.assertEqual([(span.session_id, span.tokens, span.duration) for span in spans],
+                         [("parent", 120, 14)])
+        child = next(item for item in adapter.collect_sessions() if item.session_id == "child")
+        self.assertEqual(child.total_tokens, 0)
+        self.assertEqual(child.assistant_messages, 0)
+
+    def test_fork_requires_request_evidence_and_includes_creation_boundary(self):
+        for duration, expected_tokens in ((None, 0), (10000, 120), (15000, 0)):
+            with self.subTest(duration=duration):
+                response = assistant("response", completedAt=(EPOCH + 20) * 1000,
+                                     duration=duration)
+                response["message"].pop("timestamp")
+                response["timestamp"] = iso(20)
+                self.write_session([header("child", 10, parentSession="parent"), response])
+                adapter = OMPAdapter(self.root)
+                timeline = adapter.collect_sessions()[0]
+                self.assertEqual(timeline.total_tokens, expected_tokens)
+                self.assertEqual(sum(span.tokens for span in adapter.collect()), expected_tokens)
+
     def test_fork_without_valid_creation_evidence_is_skipped(self):
         for timestamp in (None, "invalid", "2026-10-03T10:00:00"):
             with self.subTest(timestamp=timestamp):
@@ -790,6 +819,18 @@ class TestOMPAdapter(unittest.TestCase):
         self.assertEqual(adapter.read_session("header-uuid").session_id, "header-uuid")
         self.assertIsNone(adapter.read_session("scout"))
         self.assertIsNone(adapter.read_session("absent"))
+
+    def test_exact_session_lookup_is_not_limited_to_recent_64_sources(self):
+        for index in range(65):
+            self.write_session(canonical_records(f"session-{index}", tokens=index + 1),
+                               f"project/file-{index}.jsonl", mtime=100 + index)
+        adapter = OMPAdapter(self.root)
+        oldest = adapter.read_session("session-0")
+        self.assertEqual(oldest.session_id, "session-0")
+        self.assertEqual(oldest.total_tokens, 1)
+        self.write_session(canonical_records("session-0", tokens=999),
+                           "project/replacement.jsonl", mtime=1000)
+        self.assertEqual(adapter.read_session("session-0").total_tokens, 1)
 
     def test_tool_result_keeps_its_own_historical_settings(self):
         records = canonical_records()[:-1]
