@@ -419,7 +419,7 @@ def main() -> int:
         "agent",
         nargs="?",
         default=None,
-        help=f"Target agent adapter ({', '.join(ADAPTER_REGISTRY.keys())}, or 'all'). Default: auto-detect.",
+        help=f"Target agents, comma-separated ({', '.join(ADAPTER_REGISTRY.keys())}), or 'all'. Default: auto-detect.",
     )
     p_stats.add_argument("-a", "--agent", dest="agent_opt", default=None, help=argparse.SUPPRESS)
     p_stats.add_argument(
@@ -480,7 +480,7 @@ def main() -> int:
         "agent",
         nargs="?",
         default=None,
-        help=f"Target agent adapter ({', '.join(ADAPTER_REGISTRY.keys())}, or 'all'). Default: auto-detect.",
+        help=f"Target agents, comma-separated ({', '.join(ADAPTER_REGISTRY.keys())}), or 'all'. Default: auto-detect.",
     )
     p_sessions.add_argument("-a", "--agent", dest="agent_opt", default=None, help=argparse.SUPPRESS)
     p_sessions.add_argument(
@@ -532,9 +532,10 @@ def main() -> int:
         "session_id",
         nargs="?",
         default="latest",
-        help="Session ID or prefix to inspect (default: latest)",
+        help="Session ID/prefix or comma-separated agents to inspect (default: latest)",
     )
-    p_timeline.add_argument("-a", "--agent", dest="agent_opt", default=None, help="Target agent adapter")
+    p_timeline.add_argument("-a", "--agent", dest="agent_opt", default=None,
+                            help="Target agents, comma-separated, or 'all'")
     p_timeline.add_argument(
         "--window",
         choices=["30m", "1d", "7d", "30d", "all"],
@@ -578,7 +579,7 @@ def main() -> int:
         "agent",
         nargs="?",
         default=None,
-        help=f"Target agent adapter ({', '.join(ADAPTER_REGISTRY.keys())}, or 'all'). Default: auto-detect.",
+        help=f"Target agents, comma-separated ({', '.join(ADAPTER_REGISTRY.keys())}), or 'all'. Default: auto-detect.",
     )
     p_interactive.add_argument("-a", "--agent", dest="agent_opt", default=None, help=argparse.SUPPRESS)
     p_interactive.add_argument(
@@ -629,19 +630,29 @@ def main() -> int:
 
     if cmd == "timeline":
         session_target = getattr(args, "session_id", "latest")
-        if session_target and session_target.lower() in ADAPTER_REGISTRY and not agent_target:
-            agent_target = session_target.lower()
+        if session_target and not agent_target and (
+                session_target.strip().lower() in ADAPTER_REGISTRY or "," in session_target):
+            agent_target = session_target
             session_target = "latest"
     else:
         session_target = None
 
-    if agent_target and agent_target.lower() != "all":
-        target = get_adapter(agent_target, root=args.home)
-        if not target:
-            print(f"Error: Unknown agent '{agent_target}'. Supported: {list(ADAPTER_REGISTRY.keys())}", file=sys.stderr)
+    agent_names = [name.strip().lower() for name in agent_target.split(",")] if agent_target else []
+    if agent_names and agent_names != ["all"]:
+        if "all" in agent_names:
+            print("Error: 'all' must be used alone, not in a comma-separated agent list.", file=sys.stderr)
             return 1
-        adapters.append(target)
-    elif agent_target and agent_target.lower() == "all":
+        for name in agent_names:
+            if name not in ADAPTER_REGISTRY:
+                print(f"Error: Unknown agent '{name}'. Supported: {list(ADAPTER_REGISTRY.keys())}", file=sys.stderr)
+                return 1
+        seen_classes: set[type] = set()
+        for name in agent_names:
+            cls = ADAPTER_REGISTRY[name]
+            if cls not in seen_classes:
+                seen_classes.add(cls)
+                adapters.append(get_adapter(name, root=args.home))
+    elif agent_names == ["all"]:
         seen_classes: set[type] = set()
         for cls in ADAPTER_REGISTRY.values():
             if cls in seen_classes:  # aliases (e.g. 'agy') share a class

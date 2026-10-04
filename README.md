@@ -103,6 +103,8 @@ tokenmon timeline --window 1d --json | jq .
 tokenmon                                # auto-detect agents
 tokenmon stats codex --window 1d         # select agent and window
 tokenmon stats -w --interval 5           # live dashboard; Ctrl+C stops
+tokenmon omp,pi -w                      # watch selected agents together
+tokenmon omp,pi,codex -w                # combine three agents
 tokenmon stats --all --wide              # full history and detailed layout
 ```
 
@@ -141,6 +143,16 @@ OMP/Pi roots contain `sessions`, including nested persisted workers. OMP also ho
 `PI_CONFIG_DIR`, `OMP_PROFILE`/`PI_PROFILE`, and existing migrated XDG directories.
 OpenCode's database override may be absolute or data-relative; in-memory stores
 cannot be monitored externally. Existing/copied logs suffice without running an agent.
+
+Select multiple agents with a comma-separated list wherever an agent selector is
+accepted: `tokenmon omp,pi -w`, `tokenmon ps omp,pi`, or
+`tokenmon logs latest --agent omp,pi,codex`. `tokenmon logs omp,pi` selects the
+latest session across those agents; follow still pins just one session.
+Names are case-insensitive, surrounding spaces are ignored, and repeated
+names/aliases count only once. Unknown names and empty list entries are errors.
+Use `all` alone to select detected agents, or omit selection for auto-detection.
+Each selected adapter uses its own native root unless `--home` is supplied;
+that override applies the same root to every selected adapter.
 
 OpenCode formats were checked at **1.0.0/1.1.65** (split JSON), **1.2.0** (SQLite),
 and **2.0.22** (SQLite projections). Detection is schema-based; SQLite takes

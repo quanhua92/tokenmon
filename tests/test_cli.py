@@ -63,6 +63,84 @@ class TestCLIIntegration(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def _write_selected_claude_session(self):
+        project = self.root / "projects" / "selected"
+        project.mkdir(parents=True)
+        started_at = int(time.time()) - 30
+        records = [
+            {"type": "user", "message": {"content": "synthetic prompt"},
+             "timestamp": datetime.fromtimestamp(started_at, timezone.utc).isoformat()},
+            {"type": "assistant", "message": {
+                "id": "selected-response", "model": "selected-model",
+                "content": [{"type": "text", "text": "synthetic answer"}],
+                "usage": {"output_tokens": 80}},
+             "timestamp": datetime.fromtimestamp(started_at + 4, timezone.utc).isoformat()},
+        ]
+        (project / "selected-claude.jsonl").write_text(
+            "\n".join(json.dumps(record) for record in records), encoding="utf-8")
+
+    def _run_agent_selection(self, args, input=None):
+        return subprocess.run(
+            [sys.executable, "-m", "tokenmon", *args, "--home", str(self.root)],
+            input=input, capture_output=True, text=True,
+            env={**os.environ, "PYTHONPATH": "src"}, timeout=10)
+
+    def test_comma_separated_stats_merge_selected_agents_once(self):
+        self._write_selected_claude_session()
+        for args in (["codex,claude"], ["top", "codex,claude"],
+                     ["stats", "--agent", " CODEX , claude , codex , agy , antigravity "]):
+            with self.subTest(args=args):
+                result = self._run_agent_selection([*args, "--all", "--json"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                data = json.loads(result.stdout)
+                expected_agents = ["codex", "claude"]
+                if "--agent" in args:
+                    expected_agents.append("antigravity")
+                self.assertEqual(data["meta"]["agents"], expected_agents)
+                self.assertEqual(data["summary"]["all"]["total_tokens"], 200)
+                self.assertEqual(data["summary"]["all"]["total_duration_seconds"], 6)
+                self.assertEqual({stream["agent"] for stream in data["recent_streams"]},
+                                 {"codex", "claude"})
+
+    def test_comma_separated_sessions_and_timeline_selection(self):
+        self._write_selected_claude_session()
+        sessions = self._run_agent_selection(["ps", "codex,claude", "--all", "--json"])
+        self.assertEqual(sessions.returncode, 0, sessions.stderr)
+        self.assertEqual([(item["session_id"], item["agent"]) for item in json.loads(sessions.stdout)],
+                         [("selected-claude", "claude"), ("cli_test", "codex")])
+        for args in (["logs", "codex,claude"],
+                     ["timeline", "latest", "--agent", "codex,claude"],
+                     ["logs", "cli_test", "-a", "codex,claude"]):
+            with self.subTest(args=args):
+                result = self._run_agent_selection([*args, "--all", "--json"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                data = json.loads(result.stdout)
+                expected = "cli_test" if "cli_test" in args else "selected-claude"
+                self.assertEqual(data["session_id"], expected)
+                self.assertEqual(data["total_tokens"], 120 if expected == "cli_test" else 80)
+        export = self._run_agent_selection(
+            ["logs", "--agent", "codex,claude", "--window", "all", "--json"])
+        self.assertEqual(export.returncode, 0, export.stderr)
+        self.assertEqual({item["agent"] for item in json.loads(export.stdout)}, {"codex", "claude"})
+
+    def test_comma_separated_agents_populate_interactive_sessions(self):
+        self._write_selected_claude_session()
+        result = self._run_agent_selection(
+            ["interactive", "codex,claude"], input="sessions\ntimeline selected-claude\nexit\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("cli_test", result.stdout)
+        self.assertIn("selected-claude", result.stdout)
+        self.assertIn("Session Timeline", result.stdout)
+
+    def test_invalid_agent_list_fails_without_partial_output(self):
+        for selector in ("codex,unknown", "codex,", ",codex", "codex,,claude", "all,codex"):
+            for args in ([selector], ["logs", selector], ["ps", "--agent", selector]):
+                with self.subTest(args=args):
+                    result = self._run_agent_selection([*args, "--json"])
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("Error:", result.stderr)
+
     def test_cli_watch_routes_explicit_alias_and_default_stats_options(self):
         for prefix, watch_option in product((["stats"], ["top"], []), ("--watch", "-w")):
             with self.subTest(prefix=prefix, watch_option=watch_option), \
