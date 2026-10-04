@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.6] — 2026-10-05
+
+- Move a shorter stats-reading guide directly below the dashboard banner so throughput and session results remain the final output.
+- Split human throughput tables by source agent and model, label each section with its agent, and preserve the existing model-keyed JSON aggregation.
+
 ## [0.1.5] — 2026-10-04
 
 - Determine inherited OMP assistant ownership from the recorded request start, recovering it from completion and duration when needed; exclude child output without request-boundary evidence.
@@ -62,6 +67,7 @@ Initial public release of TokenMon.
 - Read agent logs and SQLite databases without modifying them.
 - Add CI checks and manual PyPI trusted publishing.
 
+[0.1.6]: https://github.com/quanhua92/tokenmon/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/quanhua92/tokenmon/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/quanhua92/tokenmon/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/quanhua92/tokenmon/compare/v0.1.2...v0.1.3
