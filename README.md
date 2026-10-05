@@ -106,6 +106,11 @@ tokenmon logs 01a10275 --output html > logs.html
 HTML reports contain their CSS, SVG charts, and small table-sorting script inline;
 they load without network access or extra dependencies. Timeline HTML uses separate
 model, reasoning, tool, user, and turn tracks so simultaneous events remain visible.
+Empty timeline tracks are hidden. Reports open on the latest activity cluster.
+Drag a range in the full-history overview, click to move the detail view, or use
+the time zoom and earlier/later controls. Labels remain fixed and time ticks adapt
+to the visible range; hover for exact timestamps and durations.
+Blank time gaps mean no recorded activity and may include waiting or unobserved work.
 Live `--watch` and `--follow` modes require terminal output and reject JSON or HTML.
 
 ### Generation Speed & Metrics (`stats`, `top`, default)

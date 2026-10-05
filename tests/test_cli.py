@@ -3,6 +3,7 @@
 import json
 import io
 import os
+import re
 import select
 import signal
 import sqlite3
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from xml.etree import ElementTree
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -384,11 +386,39 @@ class TestCLIIntegration(unittest.TestCase):
             "timeline", "cli_test", "--agent", "codex", "--all", "--output", "html",
         ])
         self.assertEqual(result.returncode, 0, result.stderr)
-        for track in ("Model", "Reasoning", "Tools", "User", "Turns"):
+        for track in ("Model", "User"):
             self.assertIn(f">{track}</text>", result.stdout)
+        for track in ("Reasoning", "Tools", "Turns"):
+            self.assertNotIn(f">{track}</text>", result.stdout)
+        self.assertIn('id="timeline-zoom"', result.stdout)
+        self.assertIn('id="timeline-overview"', result.stdout)
+        self.assertIn('id="timeline-full"', result.stdout)
+        self.assertIn('data-end=', result.stdout)
+        self.assertNotIn('<circle', result.stdout)
         self.assertIn("<svg", result.stdout)
         self.assertIn("#3b82f6", result.stdout)
         self.assertIn("#06b6d4", result.stdout)
+
+    def test_html_detail_focuses_latest_cluster_and_bounds_short_sessions(self):
+        from tokenmon.html import render_timeline_report
+        for events in (
+            [TimelineEvent(1000, "user_message", "early", "Early"),
+             TimelineEvent(4500, "user_message", "late", "Latest"),
+             TimelineEvent(4510, "assistant_message", "late", "Answer")],
+            [TimelineEvent(1000, "user_message", "one", "Only event")],
+        ):
+            with self.subTest(events=len(events)):
+                timeline = SessionTimeline("session", "codex", "m",
+                                           events[0].timestamp, events[-1].timestamp, events)
+                report = render_timeline_report(build_timeline_lanes([timeline], []), 5000)
+                svgs = [ElementTree.fromstring(svg) for svg in re.findall(r'<svg\b.*?</svg>', report, re.S)]
+                detail = next(svg for svg in svgs if svg.get('id') == 'timeline-chart')
+                start = float(detail.get('data-focus-start'))
+                end = float(detail.get('data-focus-end'))
+                self.assertTrue(0 <= start <= end <= 1)
+                if len(events) > 1:
+                    self.assertGreater(start, .9)
+                self.assertIsNotNone(detail.find("defs/clipPath"))
 
     def test_cli_sessions_list(self):
         cmd = [
