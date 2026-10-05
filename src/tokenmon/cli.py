@@ -15,8 +15,10 @@ from tokenmon import __version__
 from tokenmon.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
 from tokenmon.analyzer import (
     WINDOW_DURATIONS,
+    TimelineLane,
     analyze_agent_model_windows,
     analyze_windows,
+    build_timeline_lanes,
     filter_by_window,
     summarize_spans,
 )
@@ -287,6 +289,150 @@ def format_timeline_event(ev: TimelineEvent) -> str:
     return f"  {t_str} │ {tag} │ {ev.summary}{dur_str}{settings}"
 
 
+def format_visual_timeline(
+    lanes: list[TimelineLane],
+    compact: bool | None = None,
+    color: bool | None = None,
+) -> str:
+    """Render session activity lanes against one shared time axis."""
+    if not lanes:
+        return "No session activity found."
+    term_cols = shutil.get_terminal_size(fallback=(120, 24)).columns
+    if compact is None:
+        compact = term_cols < 100
+    if color is None:
+        color = sys.stdout.isatty()
+
+    chart_start = min(lane.started_at for lane in lanes)
+    chart_end = max(lane.ended_at for lane in lanes)
+    chart_duration = max(1.0, chart_end - chart_start)
+    prefix_width = 9 if compact else 20
+    suffix_width = 18 if compact else 0
+    chart_width = max(20, min(120, term_cols - prefix_width - suffix_width - 2))
+    priority = {
+        "turn": 1, "user": 2, "assistant": 3, "stream": 4,
+        "reasoning": 5, "tool": 6,
+    }
+    glyphs = {
+        "stream": "█", "tool": "▒", "user": "◆",
+        "assistant": "●", "reasoning": "◇", "turn": "│",
+    }
+    colors = {
+        "stream": "\033[34m", "tool": "\033[32m",
+        "user": "\033[36m", "assistant": "\033[34m", "reasoning": "\033[35m",
+        "turn": "\033[2m",
+    }
+
+    def local_time(timestamp: float, with_date: bool = False) -> str:
+        fmt = "%Y-%m-%d %H:%M:%S" if with_date else "%H:%M:%S"
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone().strftime(fmt)
+
+    def render_cells(cells: list[str | None]) -> str:
+        if not color:
+            return "".join(glyphs.get(cell, " ") if cell else " " for cell in cells)
+        chunks: list[str] = []
+        previous: str | None = None
+        for cell in cells:
+            if cell != previous:
+                if previous is not None:
+                    chunks.append("\033[0m")
+                if cell is not None:
+                    chunks.append(colors[cell])
+                previous = cell
+            chunks.append(glyphs[cell] if cell else " ")
+        if previous is not None:
+            chunks.append("\033[0m")
+        return "".join(chunks)
+
+    lines = [
+        f"📈 Session Timeline ({len(lanes)} session{'s' if len(lanes) != 1 else ''}, longest first)",
+        f"{local_time(chart_start, True)} — {local_time(chart_end, True)} local time",
+        "Legend: █ model output  ▒ tool  ◆ user  ◇ reasoning  ● assistant  │ turn",
+        "",
+    ]
+    for lane in lanes:
+        cells: list[str | None] = [None] * chart_width
+        for interval in lane.intervals:
+            left = int((interval.started_at - chart_start) / chart_duration * chart_width)
+            right = int(math.ceil((interval.ended_at - chart_start) / chart_duration * chart_width))
+            left = max(0, min(chart_width - 1, left))
+            right = max(left + 1, min(chart_width, right))
+            for index in range(left, right):
+                current = cells[index]
+                if current is None or priority[interval.kind] >= priority[current]:
+                    cells[index] = interval.kind
+        if compact:
+            label = lane.session.session_id[:8].ljust(8)
+            details = format_session_duration(lane.duration)
+            if lane.weighted_tps is not None:
+                details += f" · {lane.weighted_tps:.1f} t/s"
+        else:
+            label = f"{local_time(lane.started_at)} {lane.session.session_id[:10]}".ljust(19)
+            details = f"{format_session_duration(lane.duration)} · stream {format_session_duration(lane.streaming_duration)}"
+            if lane.weighted_tps is not None:
+                details += f" · {lane.weighted_tps:.1f} tok/s"
+        lines.append(f"{label} │{render_cells(cells)}│ {details}")
+
+    tick_positions = [0, chart_width // 2, chart_width - 1]
+    axis = ["─"] * chart_width
+    for position in tick_positions:
+        axis[position] = "┼"
+    lines.append(" " * prefix_width + "└" + "".join(axis) + "┘")
+    labels = [" "] * chart_width
+    for position in tick_positions:
+        timestamp = chart_start + (position / max(1, chart_width - 1)) * chart_duration
+        value = local_time(timestamp)
+        start = max(0, min(chart_width - len(value), position - len(value) // 2))
+        labels[start:start + len(value)] = value
+    lines.append(" " * (prefix_width + 1) + "".join(labels))
+    lines.extend(["", "Blank areas are waiting or unavailable boundaries."])
+    return "\n".join(lines)
+
+
+def visual_timeline_to_dict(lanes: list[TimelineLane], adapters: list[BaseAdapter], now: float) -> dict:
+    return {
+        "meta": {
+            "version": __version__,
+            "agents": [adapter.name for adapter in adapters],
+            "timestamp": now,
+            "session_count": len(lanes),
+        },
+        "sessions": [
+            {
+                "session_id": lane.session.session_id,
+                "agent": lane.session.agent,
+                "model": lane.session.model,
+                "cwd": lane.session.cwd,
+                **metadata_to_dict(lane.session),
+                "started_at": lane.started_at,
+                "ended_at": lane.ended_at,
+                "duration_seconds": round(lane.duration, 3),
+                "streaming_duration_seconds": round(lane.streaming_duration, 3),
+                "weighted_tps": round(lane.weighted_tps, 2) if lane.weighted_tps is not None else None,
+                "intervals": [
+                    {
+                        "kind": interval.kind,
+                        "started_at": interval.started_at,
+                        "ended_at": interval.ended_at,
+                        "duration_seconds": round(interval.duration, 3),
+                        "turn_id": interval.turn_id,
+                        "model": interval.model,
+                        "tokens": interval.tokens,
+                        "tps": round(interval.tps, 2) if interval.tps is not None else None,
+                        "summary": interval.summary,
+                        "reasoning_effort": interval.reasoning_effort,
+                        "service_tier": interval.service_tier,
+                        "speed": interval.speed,
+                        "speed_mode": interval.speed_mode,
+                    }
+                    for interval in lane.intervals
+                ],
+            }
+            for lane in lanes
+        ],
+    }
+
+
 ASCII_LOGO = r"""
   ______      __              __  ___
  /_  __/___  / /_____  ____  /  |/  /___  ____
@@ -302,7 +448,7 @@ STATS_GUIDE = """\
   • TPS = valid output tokens ÷ summed generation time (overlaps add separately); Median = the middle stream.
   • Outputs = valid/total; streams under 1s or with uncertain timing are excluded from TPS.
   • Timing: Claude turn-span may include latency; OMP starts at the first output item; Pi/OpenCode session tokens do not contribute TPS.
-  • Windows: 30m, 1d, 7d, 30d, all · Next: `tokenmon ps` for sessions · `tokenmon logs` for timelines · `--json` for scripts.
+  • Windows: 30m, 1d, 7d, 30d, all · Next: `tokenmon timeline` for activity · `tokenmon logs` for events · `--json` for scripts.
 """
 
 
@@ -383,7 +529,7 @@ def print_stats_dashboard(adapters: list[BaseAdapter], spans: list[GenerationSpa
             print(format_session_card(t, now))
             print()
         latest_id = timelines[0].session_id[:12]
-        print(f"💡 Tip: Run `tokenmon timeline {latest_id}` for full step-by-step chronology.\n")
+        print(f"💡 Tip: Run `tokenmon logs {latest_id}` for full event chronology or `tokenmon timeline` for activity lanes.\n")
 
 
 def positive_interval(value: str) -> float:
@@ -465,8 +611,10 @@ def main() -> int:
     p_stats.add_argument(
         "--json",
         action="store_true",
-        help="Output raw machine-readable JSON",
+        help="Shortcut for --output json",
     )
+    p_stats.add_argument("--output", choices=["terminal", "json", "html"], default="terminal",
+                         help="Output format (default: terminal)")
     p_stats.add_argument("-w", "--watch", action="store_true", help="Refresh the complete stats dashboard until Ctrl+C")
     p_stats.add_argument("--interval", type=positive_interval, default=2.0,
                          help="Watch refresh interval in seconds (default: 2)")
@@ -520,20 +668,21 @@ def main() -> int:
     p_sessions.add_argument(
         "--json",
         action="store_true",
-        help="Output raw machine-readable JSON",
+        help="Shortcut for --output json",
     )
+    p_sessions.add_argument("--output", choices=["terminal", "json", "html"], default="terminal",
+                            help="Output format (default: terminal)")
 
-    # 3. timeline (aliases: log, logs)
+    # 3. visual session timeline
     p_timeline = subparsers.add_parser(
         "timeline",
-        aliases=["log", "logs"],
-        help="Display detailed chronological event timeline for a session (or batch window export)",
+        help="Display session activity as shared-time-axis visual lanes",
     )
     p_timeline.add_argument(
         "session_id",
         nargs="?",
-        default="latest",
-        help="Session ID/prefix or comma-separated agents to inspect (default: latest)",
+        default=None,
+        help="Optional session ID/prefix or 'latest'; omit to compare recent sessions",
     )
     p_timeline.add_argument("-a", "--agent", dest="agent_opt", default=None,
                             help="Target agents, comma-separated, or 'all'")
@@ -541,7 +690,7 @@ def main() -> int:
         "--window",
         choices=["30m", "1d", "7d", "30d", "all"],
         default=None,
-        help="Export timelines for all sessions in time window",
+        help="Filter sessions and activity to a time window (default: 30d)",
     )
     p_timeline.add_argument(
         "--all",
@@ -551,8 +700,8 @@ def main() -> int:
     p_timeline.add_argument(
         "--tasks",
         type=int,
-        default=64,
-        help="Maximum recent task sessions to inspect (default: 64)",
+        default=10,
+        help="Maximum recent sessions to display (default: 10)",
     )
     p_timeline.add_argument(
         "--home",
@@ -563,14 +712,42 @@ def main() -> int:
     p_timeline.add_argument(
         "--json",
         action="store_true",
-        help="Output raw machine-readable JSON",
+        help="Shortcut for --output json",
     )
-    p_timeline.add_argument("-f", "--follow", action="store_true",
-                            help="Print only new events from the selected session until Ctrl+C")
-    p_timeline.add_argument("--interval", type=positive_interval, default=2.0,
-                            help="Follow polling interval in seconds (default: 2)")
+    p_timeline.add_argument("--output", choices=["terminal", "json", "html"], default="terminal",
+                            help="Output format (default: terminal)")
+    p_timeline.add_argument("--compact", action="store_true", help="Use a narrow visual layout")
+    p_timeline.add_argument("--wide", action="store_true", help="Force the detailed visual layout")
 
-    # 4. interactive (aliases: repl, shell)
+    # 4. chronological event logs (alias: log)
+    p_logs = subparsers.add_parser(
+        "logs",
+        aliases=["log"],
+        help="Display detailed chronological events for a session (or batch window export)",
+    )
+    p_logs.add_argument(
+        "session_id", nargs="?", default="latest",
+        help="Session ID/prefix or comma-separated agents to inspect (default: latest)",
+    )
+    p_logs.add_argument("-a", "--agent", dest="agent_opt", default=None,
+                        help="Target agents, comma-separated, or 'all'")
+    p_logs.add_argument("--window", choices=["30m", "1d", "7d", "30d", "all"], default=None,
+                        help="Export logs for all sessions in time window")
+    p_logs.add_argument("--all", action="store_true",
+                        help="Include full history without 30-day cutoff")
+    p_logs.add_argument("--tasks", type=int, default=64,
+                        help="Maximum recent task sessions to inspect (default: 64)")
+    p_logs.add_argument("--home", type=str, default=None,
+                        help="Override data root path for the selected agent adapter")
+    p_logs.add_argument("--json", action="store_true", help="Shortcut for --output json")
+    p_logs.add_argument("--output", choices=["terminal", "json", "html"], default="terminal",
+                        help="Output format (default: terminal)")
+    p_logs.add_argument("-f", "--follow", action="store_true",
+                        help="Print only new events from the selected session until Ctrl+C")
+    p_logs.add_argument("--interval", type=positive_interval, default=2.0,
+                        help="Follow polling interval in seconds (default: 2)")
+
+    # 5. interactive (aliases: repl, shell)
     p_interactive = subparsers.add_parser(
         "interactive",
         aliases=["repl", "shell"],
@@ -594,7 +771,7 @@ def main() -> int:
     known_cmds = {
         "stats", "top",
         "sessions", "ps", "ls",
-        "timeline", "log", "logs",
+        "timeline", "logs", "log",
         "interactive", "repl", "shell",
         "-h", "--help", "-v", "--version",
     }
@@ -614,14 +791,19 @@ def main() -> int:
         cmd = "stats"
     elif cmd in {"ps", "ls"}:
         cmd = "sessions"
-    elif cmd in {"log", "logs"}:
-        cmd = "timeline"
+    elif cmd == "log":
+        cmd = "logs"
     elif cmd in {"repl", "shell"}:
         cmd = "interactive"
 
+    output_format = getattr(args, "output", "terminal")
+    if getattr(args, "json", False):
+        if output_format not in {"terminal", "json"}:
+            parser.error("--json cannot be combined with --output html")
+        output_format = "json"
     live = getattr(args, "watch", False) or getattr(args, "follow", False)
-    if live and args.json:
-        parser.error("--json cannot be combined with --watch or --follow")
+    if live and output_format != "terminal":
+        parser.error("non-terminal output cannot be combined with --watch or --follow")
     if getattr(args, "follow", False) and (args.window is not None or args.session_id == "window"):
         parser.error("--follow selects one session; omit --window and use --all for older history")
 
@@ -629,9 +811,9 @@ def main() -> int:
     adapters = []
     agent_target = getattr(args, "agent_opt", None) or getattr(args, "agent", None)
 
-    if cmd == "timeline":
+    if cmd in {"timeline", "logs"}:
         session_target = getattr(args, "session_id", "latest")
-        if session_target and not agent_target and (
+        if cmd == "logs" and session_target and not agent_target and (
                 session_target.strip().lower() in ADAPTER_REGISTRY or "," in session_target):
             agent_target = session_target
             session_target = "latest"
@@ -692,11 +874,63 @@ def main() -> int:
                            include_all=all_val, tasks=args.tasks, recent=args.recent, compact=compact)
 
     # Print ASCII banner in human terminal mode
-    if not getattr(args, "json", False) and not getattr(args, "follow", False):
+    if output_format == "terminal" and not getattr(args, "follow", False):
         print_banner()
 
-    # Handle timeline command
+    # Handle visual timeline command
     if cmd == "timeline":
+        timelines = collect_timelines(adapters, max_sessions=args.tasks, min_timestamp=min_ts)
+        if not timelines and (not session_target or session_target == "latest"):
+            print("No sessions found to visualize.", file=sys.stderr)
+            return 1
+
+        if session_target:
+            selected = timelines[0] if session_target == "latest" and timelines else next(
+                (timeline for timeline in timelines if timeline.session_id == session_target), None)
+            if selected is None and session_target != "latest":
+                for adapter in adapters:
+                    try:
+                        candidate = adapter.read_session(session_target)
+                    except Exception as e:
+                        logger.error("Adapter '%s' error reading session: %s", adapter.name, e)
+                        continue
+                    if (candidate is not None and candidate.session_id == session_target
+                            and (min_ts is None or candidate.updated_at >= min_ts)):
+                        selected = candidate
+                        break
+            if selected is None and session_target != "latest":
+                selected = next((timeline for timeline in timelines
+                                 if timeline.session_id.startswith(session_target)
+                                 or session_target in timeline.session_id), None)
+            if selected is None:
+                print(f"Error: Session matching '{session_target}' not found.", file=sys.stderr)
+                return 1
+            timelines = [selected]
+        else:
+            timelines = timelines[:args.tasks]
+
+        spans: list[GenerationSpan] = []
+        for adapter in adapters:
+            try:
+                spans.extend(adapter.collect(max_sessions=args.tasks, min_timestamp=min_ts))
+            except Exception as e:
+                logger.warning("Adapter '%s' failed to collect spans for timeline: %s", adapter.name, e)
+        lanes = build_timeline_lanes(timelines, spans)
+        if output_format == "json":
+            print(json.dumps(visual_timeline_to_dict(lanes, adapters, now), indent=2))
+            return 0
+        if output_format == "html":
+            from tokenmon.html import render_timeline_report
+            print(render_timeline_report(lanes, now))
+            return 0
+        compact_flag = True if args.compact else (False if args.wide else None)
+        print()
+        print(format_visual_timeline(lanes, compact=compact_flag))
+        print("\nTip: Run `tokenmon logs <SESSION_ID>` for chronological event details.\n")
+        return 0
+
+    # Handle chronological logs command
+    if cmd == "logs":
         timelines = []
         for adapter in adapters:
             try:
@@ -719,7 +953,7 @@ def main() -> int:
                         timelines.insert(0, candidate)
                         break
         if not timelines:
-            print("No sessions found to inspect timeline.", file=sys.stderr)
+            print("No sessions found to inspect logs.", file=sys.stderr)
             return 1
 
         def timeline_to_dict(t: SessionTimeline) -> dict:
@@ -756,8 +990,12 @@ def main() -> int:
         export_window = (window_val is not None and session_target in {"latest", "window"}) or (session_target == "window")
 
         if export_window:
-            if args.json:
+            if output_format == "json":
                 print(json.dumps([timeline_to_dict(t) for t in timelines], indent=2))
+                return 0
+            if output_format == "html":
+                from tokenmon.html import render_logs_report
+                print(render_logs_report(timelines, now))
                 return 0
 
             print(f"\n🔍 Session Timelines ({len(timelines)} sessions within window):\n")
@@ -780,8 +1018,12 @@ def main() -> int:
                 print(f"Error: Session matching '{session_target}' not found.", file=sys.stderr)
                 return 1
 
-        if args.json:
+        if output_format == "json":
             print(json.dumps(timeline_to_dict(selected), indent=2))
+            return 0
+        if output_format == "html":
+            from tokenmon.html import render_logs_report
+            print(render_logs_report([selected], now))
             return 0
 
         if args.follow:
@@ -806,7 +1048,7 @@ def main() -> int:
 
         timelines.sort(key=lambda t: t.updated_at, reverse=True)
 
-        if args.json:
+        if output_format == "json":
             out = [
                 {
                     "session_id": t.session_id,
@@ -828,12 +1070,16 @@ def main() -> int:
             ]
             print(json.dumps(out, indent=2))
             return 0
+        if output_format == "html":
+            from tokenmon.html import render_sessions_report
+            print(render_sessions_report(timelines, now))
+            return 0
 
         compact_flag = True if args.compact else (False if args.wide else None)
         print(f"\n📂 Active & Recent Sessions ({len(timelines)} found):")
         if timelines:
             print(format_sessions_table(timelines, now, compact=compact_flag))
-            print("Tip: Run `tokenmon timeline <SESSION_ID>` (or `tokenmon logs <SESSION_ID>`) to see full event chronology.\n")
+            print("Tip: Run `tokenmon timeline` for activity lanes or `tokenmon logs <SESSION_ID>` for event details.\n")
         else:
             print("No sessions found.")
         return 0
@@ -844,7 +1090,7 @@ def main() -> int:
     analysis = analyze_windows(all_spans, window_names=windows, now=now)
     valid_spans = [s for s in all_spans if s.tps is not None]
 
-    if args.json:
+    if output_format == "json":
         # 1. Models throughput breakdown
         models_json = {}
         for model, summaries in analysis.items():
@@ -937,6 +1183,12 @@ def main() -> int:
             "recent_sessions": recent_sessions_json,
         }
         print(json.dumps(full_output, indent=2))
+        return 0
+
+    if output_format == "html":
+        from tokenmon.html import render_stats_report
+        print(render_stats_report([adapter.name for adapter in adapters], all_spans, timelines,
+                                  windows, now, args.tasks))
         return 0
 
     compact_flag = True if args.compact else (False if args.wide else None)

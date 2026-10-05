@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0] — 2026-10-05
+
+- Make `timeline` a dedicated shared-time-axis visualization colored by recorded user, reasoning, assistant/model-output, tool, and turn events.
+- Keep chronological session events and follow mode under `logs`/`log`, with their existing human and JSON representations.
+- Add visual timeline JSON, responsive compact/wide rendering, and single-session or multi-session selection.
+- Add standalone `--output html` reports for stats, sessions, timelines, and logs; use stacked SVG tracks in timeline reports to prevent event-color collisions.
+
 ## [0.1.6] — 2026-10-05
 
 - Move a shorter stats-reading guide directly below the dashboard banner so throughput and session results remain the final output.
@@ -67,6 +74,7 @@ Initial public release of TokenMon.
 - Read agent logs and SQLite databases without modifying them.
 - Add CI checks and manual PyPI trusted publishing.
 
+[0.2.0]: https://github.com/quanhua92/tokenmon/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/quanhua92/tokenmon/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/quanhua92/tokenmon/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/quanhua92/tokenmon/compare/v0.1.3...v0.1.4

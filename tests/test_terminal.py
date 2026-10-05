@@ -29,8 +29,8 @@ class TestTerminalShell(unittest.TestCase):
                 "payload": {
                     "type": "item_completed",
                     "turn_id": "turn-1",
-                    "started_at_ms": 1759485602000,
-                    "completed_at_ms": 1759485604000,
+                    "started_at_ms": 1791021602000,
+                    "completed_at_ms": 1791021604000,
                     "item": {"id": "item-1", "type": "AgentMessage"},
                 },
                 "timestamp": "2026-10-03T10:00:04Z",
@@ -84,19 +84,20 @@ class TestTerminalShell(unittest.TestCase):
             self.shell.do_timeline("latest")
             output = fake_out.getvalue()
             self.assertIn("Session Timeline", output)
-            self.assertIn("USER", output)
+            self.assertIn("Legend: █ model output", output)
+            self.assertIn("60.0 tok/s", output)
 
-    def test_shell_timeline_prefers_exact_id_over_newer_prefix(self):
+    def test_shell_logs_prefers_exact_id_over_newer_prefix(self):
         self._write_lookup_session("alpha", 0)
         self._write_lookup_session("alpha-worker", 1)
         shell = MonitorShell([CodexAdapter(self.root / "lookup")])
         with patch("sys.stdout", new=io.StringIO()) as output:
-            shell.do_timeline("alpha")
+            shell.do_logs("alpha")
         self.assertIn("Session Timeline: \033[1malpha\033[0m", output.getvalue())
         self.assertIn("USER", output.getvalue())
         self.assertNotIn("alpha-worker", output.getvalue())
 
-    def test_shell_timeline_reads_exact_id_beyond_recent_limit(self):
+    def test_shell_logs_reads_exact_id_beyond_recent_limit(self):
         for minute in range(35):
             self._write_lookup_session(f"session-{minute:02d}", minute)
         shell = MonitorShell([CodexAdapter(self.root / "lookup")])
@@ -109,30 +110,30 @@ class TestTerminalShell(unittest.TestCase):
         adapter = CodexAdapter(self.root / "lookup")
         shell = MonitorShell([adapter])
         with patch("sys.stdout", new=io.StringIO()) as output:
-            shell.do_timeline("session-00")
+            shell.do_logs("session-00")
         self.assertIn("Session Timeline: \033[1msession-00\033[0m", output.getvalue())
         self.assertIn("USER", output.getvalue())
         self.assertNotIn("not found", output.getvalue())
 
-    def test_shell_timeline_resolves_exact_id_before_recent_prefix_fallback(self):
+    def test_shell_logs_resolves_exact_id_before_recent_prefix_fallback(self):
         self._write_lookup_session("alpha", 0)
         for minute in range(1, 35):
             self._write_lookup_session(f"alpha-worker-{minute:02d}", minute)
         shell = MonitorShell([CodexAdapter(self.root / "lookup")])
         with patch("sys.stdout", new=io.StringIO()) as output:
-            shell.do_timeline("alpha")
+            shell.do_logs("alpha")
         self.assertIn("Session Timeline: \033[1malpha\033[0m", output.getvalue())
         self.assertNotIn("alpha-worker", output.getvalue())
 
-    def test_shell_timeline_reads_exact_id_with_no_recent_sessions(self):
+    def test_shell_logs_reads_exact_id_with_no_recent_sessions(self):
         with patch.object(self.adapter, "collect_sessions", return_value=[]), \
                 patch("sys.stdout", new=io.StringIO()) as output:
-            self.shell.do_timeline("shell_test")
+            self.shell.do_logs("shell_test")
         self.assertIn("Session Timeline: \033[1mshell_test\033[0m", output.getvalue())
         self.assertIn("USER", output.getvalue())
         self.assertNotIn("No sessions found", output.getvalue())
 
-    def test_shell_timeline_isolates_exact_read_adapter_errors(self):
+    def test_shell_logs_isolates_exact_read_adapter_errors(self):
         other_adapter = CodexAdapter(self.root)
         shell = MonitorShell([self.adapter, other_adapter])
         with patch.object(self.adapter, "collect_sessions", return_value=[]), \
@@ -140,37 +141,37 @@ class TestTerminalShell(unittest.TestCase):
                 patch.object(self.adapter, "read_session", side_effect=RuntimeError("unreadable")), \
                 patch("sys.stderr", new=io.StringIO()) as errors, \
                 patch("sys.stdout", new=io.StringIO()) as output:
-            shell.do_timeline("shell_test")
+            shell.do_logs("shell_test")
         self.assertIn("failed to read session: unreadable", errors.getvalue())
         self.assertIn("Session Timeline: \033[1mshell_test\033[0m", output.getvalue())
 
-    def test_shell_timeline_rejects_substituted_exact_identity(self):
+    def test_shell_logs_rejects_substituted_exact_identity(self):
         substitute = SessionTimeline("substitute", "codex", "m", 1, 2)
         with patch.object(self.adapter, "read_session", return_value=substitute), \
                 patch("sys.stdout", new=io.StringIO()) as output:
-            self.shell.do_timeline("missing")
+            self.shell.do_logs("missing")
         self.assertIn("Session 'missing' not found", output.getvalue())
         self.assertNotIn("Session Timeline", output.getvalue())
 
-    def test_shell_timeline_preserves_prefix_and_substring_fallback(self):
+    def test_shell_logs_preserves_prefix_and_substring_fallback(self):
         self._write_lookup_session("alpha-worker", 1)
         shell = MonitorShell([CodexAdapter(self.root / "lookup")])
         for target in ("alpha-w", "worker"):
             with self.subTest(target=target), patch("sys.stdout", new=io.StringIO()) as output:
-                shell.do_timeline(target)
+                shell.do_logs(target)
             self.assertIn("Session Timeline: \033[1malpha-worker\033[0m", output.getvalue())
 
-    def test_shell_timeline_latest_only_uses_newest_recent_session(self):
+    def test_shell_logs_latest_only_uses_newest_recent_session(self):
         self._write_lookup_session("alpha", 0)
         self._write_lookup_session("alpha-worker", 1)
         adapter = CodexAdapter(self.root / "lookup")
         shell = MonitorShell([adapter])
         with patch("sys.stdout", new=io.StringIO()) as output:
-            shell.do_timeline("latest")
+            shell.do_logs("latest")
         self.assertIn("Session Timeline: \033[1malpha-worker\033[0m", output.getvalue())
         with patch.object(adapter, "collect_sessions", return_value=[]), \
                 patch("sys.stdout", new=io.StringIO()) as output:
-            shell.do_timeline("latest")
+            shell.do_logs("latest")
         self.assertIn("No sessions found", output.getvalue())
 
     def test_shell_recent_command(self):

@@ -5,8 +5,9 @@ from __future__ import annotations
 import statistics
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 
-from tokenmon.models import GenerationSpan, WindowSummary
+from tokenmon.models import GenerationSpan, SessionTimeline, WindowSummary, recorded_speed_mode
 
 WINDOW_DURATIONS: dict[str, float] = {
     "30m": 1800.0,
@@ -15,6 +16,47 @@ WINDOW_DURATIONS: dict[str, float] = {
     "30d": 30 * 86400.0,
     "all": float("inf"),
 }
+
+
+@dataclass(frozen=True)
+class TimelineInterval:
+    """One evidenced interval rendered on a visual session timeline."""
+
+    kind: str  # stream or a recorded event category
+    started_at: float
+    ended_at: float
+    turn_id: str
+    model: str | None = None
+    tokens: int | None = None
+    tps: float | None = None
+    summary: str | None = None
+    reasoning_effort: str | None = None
+    service_tier: str | None = None
+    speed: str | None = None
+
+    @property
+    def speed_mode(self) -> str | None:
+        return recorded_speed_mode(self.speed, self.service_tier)
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.ended_at - self.started_at)
+
+
+@dataclass(frozen=True)
+class TimelineLane:
+    """A session and its renderable activity intervals."""
+
+    session: SessionTimeline
+    started_at: float
+    ended_at: float
+    intervals: tuple[TimelineInterval, ...]
+    streaming_duration: float
+    weighted_tps: float | None
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.ended_at - self.started_at)
 
 
 def filter_by_window(
@@ -120,3 +162,96 @@ def analyze_agent_model_windows(
             for window in windows
         ]
     return results
+
+
+def build_timeline_lanes(
+    timelines: list[SessionTimeline],
+    spans: list[GenerationSpan],
+) -> list[TimelineLane]:
+    """Build longest-first visual lanes from confirmed activity boundaries.
+
+    Generation intervals come only from valid spans. Recorded events become
+    duration blocks when supported by telemetry and point markers otherwise.
+    """
+    candidate_spans: dict[tuple[str, str], list[GenerationSpan]] = defaultdict(list)
+    for span in spans:
+        if span.tps is not None:
+            candidate_spans[(span.agent, span.session_id)].append(span)
+    spans_by_session: dict[tuple[str, str], list[GenerationSpan]] = defaultdict(list)
+    for timeline in timelines:
+        key = (timeline.agent, timeline.session_id)
+        for span in candidate_spans.get(key, []):
+            if (timeline.created_at <= 0 and timeline.updated_at <= 0) or (
+                    span.ended_at >= timeline.created_at and span.started_at <= timeline.updated_at):
+                spans_by_session[key].append(span)
+    lanes: list[TimelineLane] = []
+    for timeline in timelines:
+        session_spans = sorted(
+            spans_by_session.get((timeline.agent, timeline.session_id), []),
+            key=lambda span: (span.started_at, span.ended_at),
+        )
+        intervals: list[TimelineInterval] = []
+        for span in session_spans:
+            intervals.append(TimelineInterval(
+                kind="stream",
+                started_at=span.started_at,
+                ended_at=span.ended_at,
+                turn_id=span.turn_id,
+                model=span.model,
+                tokens=span.tokens,
+                tps=span.tps,
+                reasoning_effort=span.reasoning_effort,
+                service_tier=span.service_tier,
+                speed=span.speed,
+            ))
+
+        event_kinds = {
+            "user_message": "user",
+            "assistant_message": "assistant",
+            "reasoning": "reasoning",
+            "tool_call": "tool",
+            "tool_output": "tool",
+            "turn_start": "turn",
+            "turn_end": "turn",
+        }
+        for event in timeline.events:
+            interval_kind = event_kinds.get(event.kind)
+            if interval_kind is None:
+                continue
+            duration = event.duration if (
+                event.duration is not None
+                and event.duration > 0
+                and event.kind in {"assistant_message", "reasoning", "tool_call"}
+            ) else 0.0
+            intervals.append(TimelineInterval(
+                kind=interval_kind,
+                started_at=event.timestamp,
+                ended_at=event.timestamp + duration,
+                turn_id=event.turn_id,
+                summary=event.summary,
+                reasoning_effort=event.reasoning_effort,
+                service_tier=event.service_tier,
+                speed=event.speed,
+            ))
+
+        intervals.sort(key=lambda interval: (interval.started_at, interval.ended_at, interval.kind))
+        boundaries = [timeline.created_at, timeline.updated_at]
+        boundaries.extend(interval.started_at for interval in intervals)
+        boundaries.extend(interval.ended_at for interval in intervals)
+        positive_boundaries = [boundary for boundary in boundaries if boundary > 0]
+        started_at = min(positive_boundaries) if positive_boundaries else 0.0
+        ended_at = max(positive_boundaries) if positive_boundaries else started_at
+        total_tokens = sum(span.tokens for span in session_spans)
+        streaming_duration = sum(span.duration for span in session_spans)
+        weighted_tps = total_tokens / streaming_duration if streaming_duration > 0 else None
+        lanes.append(TimelineLane(
+            session=timeline,
+            started_at=started_at,
+            ended_at=ended_at,
+            intervals=tuple(intervals),
+            streaming_duration=streaming_duration,
+            weighted_tps=weighted_tps,
+        ))
+
+    lanes.sort(key=lambda lane: (lane.duration, lane.ended_at), reverse=True)
+    return lanes

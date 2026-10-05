@@ -1,6 +1,6 @@
 [project]
 name = "tokenmon"
-version = "0.1.6"
+version = "0.2.0"
 description = "A fast, zero-dependency command-line monitor for local AI coding agents."
 readme = "README.md"
 requires-python = ">=3.10"

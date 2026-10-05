@@ -10,8 +10,9 @@ import time
 
 from tokenmon import __version__
 from tokenmon.adapters import ADAPTER_REGISTRY, BaseAdapter, detect_available_adapters, get_adapter
-from tokenmon.analyzer import WINDOW_DURATIONS, analyze_agent_model_windows
-from tokenmon.cli import ASCII_LOGO, format_recent_span, format_sessions_table, format_table, format_timeline_view
+from tokenmon.analyzer import WINDOW_DURATIONS, analyze_agent_model_windows, build_timeline_lanes
+from tokenmon.cli import (ASCII_LOGO, format_recent_span, format_sessions_table, format_table,
+                          format_timeline_view, format_visual_timeline)
 from tokenmon.models import GenerationSpan, SessionTimeline
 
 
@@ -108,14 +109,14 @@ Alias: ls"""
         now = time.time()
         print(f"\n📂 Active & Recent Sessions ({len(timelines)} found):")
         print(format_sessions_table(timelines[:limit], now))
-        print("Tip: Use 'timeline <SESSION_ID>' to view chronological events.\n")
+        print("Tip: Use 'timeline' for activity lanes or 'logs <SESSION_ID>' for events.\n")
 
     do_ls = do_sessions
 
-    def do_timeline(self, arg: str):
+    def do_logs(self, arg: str):
         """Display step-by-step chronology of a session (user prompts, assistant answers, tools).
-Usage: timeline [SESSION_ID|latest]
-Alias: t"""
+Usage: logs [SESSION_ID|latest]
+Alias: log"""
         target = arg.strip() or "latest"
         timelines = self._get_timelines(force=True)
         selected = None
@@ -151,10 +152,54 @@ Alias: t"""
         print(format_timeline_view(selected, time.time()))
         print()
 
-    def complete_timeline(self, text, line, begidx, endidx):
+    def complete_logs(self, text, line, begidx, endidx):
         timelines = self._get_timelines()
         ids = ["latest"] + [t.session_id for t in timelines]
         return [i for i in ids if i.startswith(text)]
+
+    do_log = do_logs
+    complete_log = complete_logs
+
+    def do_timeline(self, arg: str):
+        """Display recent sessions as shared-time-axis activity lanes.
+Usage: timeline [SESSION_ID|latest]
+Alias: t"""
+        target = arg.strip()
+        timelines = self._get_timelines(max_sessions=32, force=True)
+        if not timelines and (not target or target == "latest"):
+            print("No sessions found.")
+            return
+        if target:
+            selected = timelines[0] if target == "latest" and timelines else next(
+                (timeline for timeline in timelines if timeline.session_id == target), None)
+            if selected is None and target != "latest":
+                for adapter in self.adapters:
+                    try:
+                        candidate = adapter.read_session(target)
+                    except Exception as e:
+                        print(f"Warning: Adapter '{adapter.name}' failed to read session: {e}", file=sys.stderr)
+                        continue
+                    if candidate is not None and candidate.session_id == target:
+                        selected = candidate
+                        break
+            if selected is None and target != "latest":
+                selected = next((timeline for timeline in timelines
+                                 if timeline.session_id.startswith(target) or target in timeline.session_id), None)
+            if selected is None:
+                print(f"Error: Session '{target}' not found. Use 'sessions' to see available IDs.")
+                return
+            timelines = [selected]
+        else:
+            timelines = timelines[:10]
+        lanes = build_timeline_lanes(timelines, self._get_spans(max_sessions=64))
+        print()
+        print(format_visual_timeline(lanes))
+        print("\nTip: Use 'logs <SESSION_ID>' for chronological event details.\n")
+
+    def complete_timeline(self, text, line, begidx, endidx):
+        timelines = self._get_timelines()
+        ids = ["latest"] + [timeline.session_id for timeline in timelines]
+        return [session_id for session_id in ids if session_id.startswith(text)]
 
     do_t = do_timeline
 

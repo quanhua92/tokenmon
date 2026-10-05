@@ -24,10 +24,12 @@ from tokenmon.cli import (
     format_sessions_table,
     format_session_card,
     format_timeline_view,
+    format_visual_timeline,
     format_table,
     main,
     print_stats_dashboard,
 )
+from tokenmon.analyzer import build_timeline_lanes
 from tokenmon.models import GenerationSpan, SessionTimeline, TimelineEvent, WindowSummary
 
 
@@ -119,7 +121,7 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertEqual([(item["session_id"], item["agent"]) for item in json.loads(sessions.stdout)],
                          [("selected-claude", "claude"), ("cli_test", "codex")])
         for args in (["logs", "codex,claude"],
-                     ["timeline", "latest", "--agent", "codex,claude"],
+                     ["logs", "latest", "--agent", "codex,claude"],
                      ["logs", "cli_test", "-a", "codex,claude"]):
             with self.subTest(args=args):
                 result = self._run_agent_selection([*args, "--all", "--json"])
@@ -128,6 +130,11 @@ class TestCLIIntegration(unittest.TestCase):
                 expected = "cli_test" if "cli_test" in args else "selected-claude"
                 self.assertEqual(data["session_id"], expected)
                 self.assertEqual(data["total_tokens"], 120 if expected == "cli_test" else 80)
+        visual = self._run_agent_selection(
+            ["timeline", "latest", "--agent", "codex,claude", "--all", "--json"])
+        self.assertEqual(visual.returncode, 0, visual.stderr)
+        visual_data = json.loads(visual.stdout)
+        self.assertEqual(visual_data["sessions"][0]["session_id"], "selected-claude")
         export = self._run_agent_selection(
             ["logs", "--agent", "codex,claude", "--window", "all", "--json"])
         self.assertEqual(export.returncode, 0, export.stderr)
@@ -136,7 +143,7 @@ class TestCLIIntegration(unittest.TestCase):
     def test_comma_separated_agents_populate_interactive_sessions(self):
         self._write_selected_claude_session()
         result = self._run_agent_selection(
-            ["interactive", "codex,claude"], input="sessions\ntimeline selected-claude\nexit\n")
+            ["interactive", "codex,claude"], input="sessions\nlogs selected-claude\nexit\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("cli_test", result.stdout)
         self.assertIn("selected-claude", result.stdout)
@@ -180,7 +187,7 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("Exited watch mode", output.getvalue())
 
     def test_cli_follow_routes_aliases_and_session_selection_without_history(self):
-        for command, target in [("logs", "codex"), ("log", "cli_t"), ("timeline", "latest")]:
+        for command, target in [("logs", "codex"), ("log", "cli_t")]:
             with self.subTest(command=command), \
                     patch.object(sys, "argv", ["tokenmon", command, target, "--home", str(self.root),
                                               "-a", "codex", "-f", "--interval", "3"]), \
@@ -201,6 +208,8 @@ class TestCLIIntegration(unittest.TestCase):
         cases = [
             ["sessions", "-w", "1d"], ["logs", "-w", "1d"],
             ["stats", "--watch", "--json"], ["stats", "-w", "--json"], ["logs", "--follow", "--json"],
+            ["stats", "--watch", "--output", "html"], ["logs", "--follow", "--output", "html"],
+            ["stats", "--json", "--output", "html"],
             ["logs", "-f", "--window", "1d"], ["logs", "window", "-f"],
         ]
         for command in ("stats", "logs"):
@@ -343,6 +352,44 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn("gpt-5", data["models"])
         self.assertEqual(len(data["recent_streams"]), 1)
 
+    def test_output_json_matches_json_shortcut(self):
+        shortcut = self._run_agent_selection(["stats", "codex", "--all", "--json"])
+        explicit = self._run_agent_selection(["stats", "codex", "--all", "--output", "json"])
+        self.assertEqual(shortcut.returncode, 0, shortcut.stderr)
+        self.assertEqual(explicit.returncode, 0, explicit.stderr)
+        shortcut_data = json.loads(shortcut.stdout)
+        explicit_data = json.loads(explicit.stdout)
+        shortcut_data["meta"].pop("timestamp")
+        explicit_data["meta"].pop("timestamp")
+        self.assertEqual(shortcut_data, explicit_data)
+
+    def test_snapshot_commands_generate_standalone_html(self):
+        cases = [
+            (["stats", "codex", "--all"], "TokenMon statistics"),
+            (["ps", "codex", "--all"], "TokenMon sessions"),
+            (["timeline", "cli_test", "--agent", "codex", "--all"], "TokenMon activity timeline"),
+            (["logs", "cli_test", "--agent", "codex", "--all"], "TokenMon event logs"),
+        ]
+        for arguments, title in cases:
+            with self.subTest(arguments=arguments):
+                result = self._run_agent_selection([*arguments, "--output", "html"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(result.stdout.startswith("<!doctype html>"))
+                self.assertIn(f"<title>{title}</title>", result.stdout)
+                self.assertIn("</html>", result.stdout)
+                self.assertNotIn("\033[", result.stdout)
+
+    def test_timeline_html_uses_stacked_event_tracks(self):
+        result = self._run_agent_selection([
+            "timeline", "cli_test", "--agent", "codex", "--all", "--output", "html",
+        ])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for track in ("Model", "Reasoning", "Tools", "User", "Turns"):
+            self.assertIn(f">{track}</text>", result.stdout)
+        self.assertIn("<svg", result.stdout)
+        self.assertIn("#3b82f6", result.stdout)
+        self.assertIn("#06b6d4", result.stdout)
+
     def test_cli_sessions_list(self):
         cmd = [
             sys.executable,
@@ -386,8 +433,9 @@ class TestCLIIntegration(unittest.TestCase):
         res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res.returncode, 0)
         self.assertIn("Session Timeline", res.stdout)
-        self.assertIn("USER", res.stdout)
-        self.assertIn("ASSISTANT", res.stdout)
+        self.assertIn("Legend: █ model output", res.stdout)
+        self.assertIn("60.0 tok/s", res.stdout)
+        self.assertNotIn("USER", res.stdout)
 
         # Test Docker alias 'logs' (default to latest)
         cmd_logs = [
@@ -418,10 +466,67 @@ class TestCLIIntegration(unittest.TestCase):
         res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res.returncode, 0)
         data = json.loads(res.stdout)
-        self.assertIsInstance(data, list)
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]["session_id"], "cli_test")
-        self.assertIn("events", data[0])
+        self.assertEqual(data["meta"]["version"], "0.2.0")
+        self.assertEqual(len(data["sessions"]), 1)
+        self.assertEqual(data["sessions"][0]["session_id"], "cli_test")
+        self.assertEqual({interval["kind"] for interval in data["sessions"][0]["intervals"]},
+                         {"user", "assistant", "stream"})
+
+    def test_visual_timeline_builds_evidenced_intervals_and_sorts_longest_first(self):
+        short = SessionTimeline(
+            "short", "codex", "m", 100, 120,
+            [TimelineEvent(110, "tool_call", "t1", "Tool call: shell", duration=4),
+             TimelineEvent(118, "tool_call", "t1", "Unknown duration")],
+        )
+        long = SessionTimeline("long", "codex", "m", 90, 140, [])
+        spans = [
+            GenerationSpan("codex", "short", "t1", "m", 200, 100, 120),
+            GenerationSpan("codex", "long", "t2", "m", 1000, 120, 130),
+            GenerationSpan("codex", "long", "t3", "m", 1100, 130, 140),
+            GenerationSpan("codex", "short", "bad", "m", 100, 105, 106,
+                           is_valid=False, note="uncertain"),
+        ]
+        lanes = build_timeline_lanes([short, long], spans)
+        self.assertEqual([lane.session.session_id for lane in lanes], ["long", "short"])
+        short_lane = lanes[1]
+        self.assertEqual([interval.kind for interval in short_lane.intervals],
+                         ["stream", "tool", "tool"])
+        self.assertEqual(short_lane.weighted_tps, 10.0)
+        self.assertEqual(short_lane.streaming_duration, 20)
+        self.assertEqual(short_lane.intervals[1].ended_at, 114)
+        self.assertEqual(short_lane.intervals[2].duration, 0)
+
+        rendered = format_visual_timeline(lanes, compact=True, color=False)
+        self.assertIn("█", rendered)
+        self.assertIn("▒", rendered)
+        self.assertNotIn("\033[", rendered)
+        self.assertIn("long", rendered)
+
+    def test_visual_timeline_does_not_encode_throughput_as_event_color(self):
+        timeline = SessionTimeline("s", "codex", "m", 1, 20, [])
+        spans = [
+            GenerationSpan("codex", "s", "slow-short", "m", 149, 1, 16),
+            GenerationSpan("codex", "s", "fast-1", "m", 1000, 1, 11),
+            GenerationSpan("codex", "s", "fast-2", "m", 1100, 1, 11),
+        ]
+        lanes = build_timeline_lanes([timeline], spans)
+        self.assertEqual([interval.kind for interval in lanes[0].intervals],
+                         ["stream", "stream", "stream"])
+
+    def test_visual_timeline_colors_recorded_event_categories(self):
+        events = [
+            TimelineEvent(1, "turn_start", "t", "Start"),
+            TimelineEvent(2, "user_message", "t", "Prompt"),
+            TimelineEvent(3, "assistant_message", "t", "Answer"),
+            TimelineEvent(4, "reasoning", "t", "Think"),
+            TimelineEvent(5, "tool_call", "t", "Tool"),
+        ]
+        lane = build_timeline_lanes(
+            [SessionTimeline("s", "codex", "m", 1, 6, events)], [],
+        )
+        output = format_visual_timeline(lane, compact=False, color=True)
+        for ansi_color in ("\033[2m", "\033[36m", "\033[34m", "\033[35m", "\033[32m"):
+            self.assertIn(ansi_color, output)
 
     def test_cli_compact_and_wide_flags(self):
         # Test --compact flag with stats

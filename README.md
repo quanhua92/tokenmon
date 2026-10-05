@@ -42,7 +42,8 @@ Expand a screenshot below. Click the image to view it at full size.
 - **Strictly Read-Only**: Safely opens local files and SQLite databases in read-only mode (`?mode=ro`). Never locks or changes your logs.
 - **Meaningful Averages**: Calculates true weighted speed ($\frac{\text{total tokens}}{\text{total time}}$), median speed, and min/max ranges over rolling time windows (`30m`, `1d`, `7d`, `30d`, `all`).
 - **Supports Popular Agents**: Auto-detects **Codex** (`~/.codex`), **Claude Code** (`~/.claude/projects/`), **Antigravity** (`~/.gemini/antigravity-cli`), **Oh My Pi / OMP** (`~/.omp/agent/sessions/`), **Pi** (`~/.pi/agent/sessions/`), and **OpenCode** (`~/.local/share/opencode`; v1 JSON/SQLite and v2 SQLite).
-- **Session Timelines**: Step-by-step history of user prompts, thinking, assistant responses, and tool calls.
+- **Activity Timelines**: Compare prompts, reasoning, model output, tool execution, and waiting across sessions on one time axis.
+- **Event Logs**: Inspect the step-by-step history of user prompts, thinking, assistant responses, and tool calls.
 - **JSON Ready**: Add `--json` to pipe clean data into `jq` or external dashboards.
 
 ---
@@ -80,22 +81,32 @@ tokenmon
 
 ## Usage
 
-TokenMon uses simple Docker-style subcommands: `stats` (default), `ps` (sessions), `logs` (timelines), and `interactive` (shell).
+TokenMon uses simple Docker-style subcommands: `stats` (default), `ps` (sessions), `timeline` (visual activity), `logs` (events), and `interactive` (shell).
 
 Running `tokenmon` by itself defaults directly to `stats`.
 The examples below use the installed command; with uvx, use `uvx tokenmon` in its place.
 
-### Machine-Readable JSON Output
+### Output Formats
 
-Stats, sessions, and historical timelines support `--json` for easy scripting.
-Live `--watch` and `--follow` modes require human output and reject `--json`:
+Stats, sessions, visual timelines, and historical logs support terminal, JSON, and
+standalone HTML output. `--json` remains a shortcut for `--output json`:
 
 ```bash
 tokenmon stats --json | jq .
 tokenmon ps --json | jq .
 tokenmon logs 01a10275 --json | jq .
-tokenmon timeline --window 1d --json | jq .
+tokenmon timeline --window 1d --json | jq '.sessions'
+
+tokenmon stats --output html > stats.html
+tokenmon ps --output html > sessions.html
+tokenmon timeline --output html > timeline.html
+tokenmon logs 01a10275 --output html > logs.html
 ```
+
+HTML reports contain their CSS, SVG charts, and small table-sorting script inline;
+they load without network access or extra dependencies. Timeline HTML uses separate
+model, reasoning, tool, user, and turn tracks so simultaneous events remain visible.
+Live `--watch` and `--follow` modes require terminal output and reject JSON or HTML.
 
 ### Generation Speed & Metrics (`stats`, `top`, default)
 
@@ -196,7 +207,26 @@ Durations of 24 hours or more include days, for example
 `Inactive (idle 7d 00h 14m 19s)`. Stats total time, session durations, and recent
 session cards use the same duration format.
 
-### Event Timelines (`timeline`, `logs`, `log`)
+### Visual Activity Timeline (`timeline`)
+
+Compare recent sessions on a shared time axis. Colors identify recorded user,
+reasoning, assistant/model-output, tool, and turn-boundary events. Events with
+recorded durations become blocks; instantaneous events remain visible as markers.
+Blank regions are waiting or unavailable boundaries, never invented activity.
+
+```bash
+tokenmon timeline                         # compare the 10 most recent sessions
+tokenmon timeline --window 1d --tasks 20 # choose history and lane count
+tokenmon timeline --agent codex          # select one or more source agents
+tokenmon timeline 01a10275                # visualize one session
+tokenmon timeline --json | jq '.sessions'
+```
+
+Sessions are displayed longest first. `--compact` and `--wide` control label
+density; redirected output uses distinct block characters without ANSI color.
+The timeline JSON contains session lanes and ordered recorded-activity intervals.
+
+### Chronological Event Logs (`logs`, `log`)
 
 See the chronological step-by-step history of prompts, model thoughts, responses, and tool calls:
 
@@ -217,8 +247,8 @@ tokenmon logs codex -f
 # Customize the polling interval (default: 2 seconds)
 tokenmon logs -f --interval 1
 
-# Export all session timelines from today in JSON format
-tokenmon timeline --window 1d --json
+# Export all session event logs from today in JSON format
+tokenmon logs --window 1d --json
 ```
 
 Follow mode starts at the current end: it prints a short session header, then only
@@ -227,7 +257,7 @@ another session becomes newer, and appends output without clearing the screen or
 replaying history. Updates to an existing event's usage or timestamp do not print
 that event again. Press Ctrl+C to stop.
 
-`-f` and `--follow` work with `logs`, `log`, and `timeline`. Follow selects one
+`-f` and `--follow` work with `logs` and `log`. Follow selects one
 session, so it cannot be combined with the batch export option `--window`; use
 `--all` to select a session older than the default 30-day cutoff. The interval must
 be a positive, finite number. Polling reads the selected session again rather than
@@ -247,13 +277,14 @@ Available commands inside the shell:
 ```text
 (tokenmon) summary 30m        # view 30m throughput table
 (tokenmon) sessions           # list active & inactive sessions
-(tokenmon) timeline latest    # view step-by-step event timeline
+(tokenmon) timeline           # compare session activity lanes
+(tokenmon) logs latest        # view step-by-step session events
 (tokenmon) recent 15          # view latest generation speeds
 (tokenmon) watch 2.0 1d       # metrics, recent streams, and session cards (Ctrl+C to stop)
 (tokenmon) help               # list all commands
 ```
 
-Shell timelines prefer exact session IDs over prefix matches and can open exact
+Shell timelines and logs prefer exact session IDs over prefix matches and can open exact
 IDs outside the recent-session list. CLI exact-ID lookup also bypasses the
 `--tasks` discovery limit; history cutoffs still apply, so use `--all` for older
 sessions. Prefix matching searches only the discovered recent sessions.
