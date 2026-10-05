@@ -19,6 +19,7 @@ from pathlib import Path
 from itertools import product
 from unittest.mock import Mock, patch
 
+from tokenmon import __version__
 from tokenmon.cli import (
     configuration_metadata,
     format_recent_span,
@@ -496,7 +497,7 @@ class TestCLIIntegration(unittest.TestCase):
         res = subprocess.run(cmd, capture_output=True, text=True, env={"PYTHONPATH": "src"})
         self.assertEqual(res.returncode, 0)
         data = json.loads(res.stdout)
-        self.assertEqual(data["meta"]["version"], "0.2.0")
+        self.assertEqual(data["meta"]["version"], __version__)
         self.assertEqual(len(data["sessions"]), 1)
         self.assertEqual(data["sessions"][0]["session_id"], "cli_test")
         self.assertEqual({interval["kind"] for interval in data["sessions"][0]["intervals"]},

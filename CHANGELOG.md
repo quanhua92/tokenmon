@@ -1,13 +1,16 @@
 # Changelog
 
+## [0.2.1] — 2026-10-05
+
+- Tighten HTML timeline spacing, hide empty tracks, show short recorded durations as bars, and add precise timestamp/duration tooltips.
+- Add a full-history range selector, fixed detail-view labels, adaptive time ticks, and automatic focus on the latest activity cluster in HTML timelines.
+
 ## [0.2.0] — 2026-10-05
 
 - Make `timeline` a dedicated shared-time-axis visualization colored by recorded user, reasoning, assistant/model-output, tool, and turn events.
 - Keep chronological session events and follow mode under `logs`/`log`, with their existing human and JSON representations.
 - Add visual timeline JSON, responsive compact/wide rendering, and single-session or multi-session selection.
 - Add standalone `--output html` reports for stats, sessions, timelines, and logs; use stacked SVG tracks in timeline reports to prevent event-color collisions.
-- Tighten HTML timeline spacing, hide empty tracks, show short recorded durations as bars, and add horizontal time zoom with precise timestamp/duration tooltips.
-- Add a full-history range selector, fixed detail-view labels, adaptive time ticks, and automatic focus on the latest activity cluster in HTML timelines.
 
 ## [0.1.6] — 2026-10-05
 
@@ -76,6 +79,7 @@ Initial public release of TokenMon.
 - Read agent logs and SQLite databases without modifying them.
 - Add CI checks and manual PyPI trusted publishing.
 
+[0.2.1]: https://github.com/quanhua92/tokenmon/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/quanhua92/tokenmon/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/quanhua92/tokenmon/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/quanhua92/tokenmon/compare/v0.1.4...v0.1.5
