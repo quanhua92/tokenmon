@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.2.2] — 2026-10-07
+
+- Add `tokemon` as an alias for the `tokenmon` command.
+
 ## [0.2.1] — 2026-10-05
 
 - Tighten HTML timeline spacing, hide empty tracks, show short recorded durations as bars, and add precise timestamp/duration tooltips.
@@ -79,6 +83,7 @@ Initial public release of TokenMon.
 - Read agent logs and SQLite databases without modifying them.
 - Add CI checks and manual PyPI trusted publishing.
 
+[0.2.2]: https://github.com/quanhua92/tokenmon/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/quanhua92/tokenmon/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/quanhua92/tokenmon/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/quanhua92/tokenmon/compare/v0.1.5...v0.1.6
