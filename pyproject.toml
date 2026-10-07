@@ -8,6 +8,7 @@ dependencies = []
 
 [project.scripts]
 tokenmon = "tokenmon.cli:main"
+tokemon = "tokenmon.cli:main"
 
 [project.urls]
 Repository = "https://github.com/quanhua92/tokenmon"

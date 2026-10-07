@@ -67,6 +67,8 @@ uv tool install tokenmon
 tokenmon
 ```
 
+The `tokemon` command is available as an alias after installation.
+
 If `tokenmon` is not on your PATH, run `uv tool update-shell` and restart your shell.
 Upgrade with `uv tool upgrade tokenmon`.
 
@@ -76,6 +78,8 @@ Or install with pip in your Python environment:
 pip install tokenmon
 tokenmon
 ```
+
+This installation also provides the `tokemon` alias.
 
 ---
 
