@@ -611,6 +611,29 @@ class TestCLIIntegration(unittest.TestCase):
                 self.assertIn("gpt-6.1-sol medium fast", output)
                 self.assertIn("50.0 TPS", output)
 
+    def test_recent_stream_shows_excluded_output_without_inventing_tps(self):
+        span = GenerationSpan("codex", "s", "t", "gpt-6.1-sol", 826, 100, 103.43,
+                              timing_source="stream-log", is_valid=False,
+                              note="unconfirmed_initial_span")
+        for compact in (True, False):
+            with self.subTest(compact=compact):
+                output = format_recent_span(span, compact=compact)
+                self.assertIn("unmeasured: unconfirmed_initial_span", output)
+                self.assertNotIn("0.0 TPS", output)
+
+    def test_recent_stream_json_includes_excluded_output_and_reason(self):
+        span = GenerationSpan("codex", "s", "t", "gpt-6.1-sol", 826, 100, 103.43,
+                              timing_source="stream-log", is_valid=False,
+                              note="unconfirmed_initial_span")
+        with patch.object(sys, "argv", ["tokenmon", "stats", "codex", "--all", "--json"]), \
+                patch("tokenmon.cli.collect_stats", return_value=([span], [])), \
+                patch("sys.stdout", new=io.StringIO()) as output:
+            self.assertEqual(main(), 0)
+        stream = json.loads(output.getvalue())["recent_streams"][0]
+        self.assertEqual(stream["tokens"], 826)
+        self.assertIsNone(stream["tps"])
+        self.assertEqual(stream["note"], "unconfirmed_initial_span")
+
     def test_recent_stream_json_contains_optional_metadata(self):
         path = self.root / "sessions" / "cli_test.jsonl"
         records = [json.loads(line) for line in path.read_text().splitlines()]

@@ -202,26 +202,30 @@ def format_recent_span(s: GenerationSpan, compact: bool | None = None) -> str:
         compact = term_cols < 88
 
     dt = datetime.fromtimestamp(s.ended_at, tz=timezone.utc).astimezone()
-    tps_val = s.tps or 0.0
+    measured = s.tps is not None
+    tps_val = s.tps
     details = " ".join(value for value in (s.reasoning_effort, s.speed_mode) if value)
     model_label = s.model + (f" {details}" if details else "")
 
     if compact:
         t_str = dt.strftime("%H:%M:%S")
         m_str = s.model[:12] + (f" {details}" if details else "")
-        return (
-            f"  {t_str}  {m_str:<12}  "
-            f"\033[1;32m{tps_val:5.1f} TPS\033[0m  "
-            f"({s.tokens:,} tok / {s.duration:.1f}s)"
-        )
+        rate = f"{tps_val:5.1f} TPS" if measured else f"unmeasured: {s.note or 'unknown timing'}"
+        if measured:
+            rate = f"\033[1;32m{rate}\033[0m"
+        timing = f"({s.tokens:,} tok / {s.duration:.1f}s)" if measured else f"({s.tokens:,} tok)"
+        return f"  {t_str}  {m_str:<12}  {rate}  {timing}"
     else:
         t_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-        return (
-            f"  [{t_str}] {model_label:<18} : "
-            f"\033[1;32m{tps_val:6.1f} TPS\033[0m  "
-            f"({s.tokens:5d} tokens in {s.duration:5.2f}s) "
-            f"[{s.timing_source}]"
-        )
+        rate = f"{tps_val:6.1f} TPS" if measured else f"unmeasured: {s.note or 'unknown timing'}"
+        rate = f"\033[1;32m{rate}\033[0m" if measured else rate
+        timing = f"({s.tokens:5d} tokens in {s.duration:5.2f}s)" if measured else f"({s.tokens:5d} tokens)"
+        return f"  [{t_str}] {model_label:<18} : {rate}  {timing} [{s.timing_source}]"
+
+
+def recent_stream_candidates(spans: list[GenerationSpan]) -> list[GenerationSpan]:
+    """Return measured streams plus Codex output spans whose timing was excluded."""
+    return [s for s in spans if s.tps is not None or s.agent == "codex"]
 
 
 def format_session_card(t: SessionTimeline, now: float) -> str:
@@ -515,11 +519,11 @@ def print_stats_dashboard(adapters: list[BaseAdapter], spans: list[GenerationSpa
         print(f"🤖 Model: \033[1m{model}\033[0m [Agent: {agent}]")
         print(format_table(summaries, compact=compact))
         print()
-    valid_spans = [s for s in spans if s.tps is not None]
-    if valid_spans and recent > 0:
-        recent_count = min(recent, len(valid_spans))
+    recent_spans = recent_stream_candidates(spans)
+    if recent_spans and recent > 0:
+        recent_count = min(recent, len(recent_spans))
         print(f"📋 Recent {recent_count} Generation Streams:")
-        for s in valid_spans[-recent_count:]:
+        for s in recent_spans[-recent_count:]:
             print(format_recent_span(s, compact=compact))
         print()
     if timelines:
@@ -1131,7 +1135,8 @@ def main() -> int:
             }
 
         # 2. Recent generation streams
-        recent_count = min(args.recent, len(valid_spans)) if args.recent > 0 else 0
+        recent_spans = recent_stream_candidates(all_spans)
+        recent_count = min(args.recent, len(recent_spans)) if args.recent > 0 else 0
         recent_streams_json = [
             {
                 "timestamp": s.ended_at,
@@ -1143,9 +1148,10 @@ def main() -> int:
                 "duration": round(s.duration, 3),
                 "tps": round(s.tps, 2) if s.tps is not None else None,
                 "timing_source": s.timing_source,
+                "note": s.note,
                 **metadata_to_dict(s),
             }
-            for s in valid_spans[-recent_count:]
+            for s in recent_spans[-recent_count:]
         ] if recent_count > 0 else []
 
         # 3. Recent session cards
