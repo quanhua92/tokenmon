@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.3] — 2026-10-12
+
+- Include Codex output spans with excluded timing in the recent-stream preview, labeled with the exclusion reason.
+- Trust matching Codex diagnostic start timestamps when JSONL item timing collapses to the same millisecond.
+- Lower the minimum measured stream duration to 0.1 seconds and raise the maximum accepted rate to 500 TPS.
+
 ## [0.2.2] — 2026-10-07
 
 - Add `tokemon` as an alias for the `tokenmon` command.
@@ -83,6 +89,7 @@ Initial public release of TokenMon.
 - Read agent logs and SQLite databases without modifying them.
 - Add CI checks and manual PyPI trusted publishing.
 
+[0.2.3]: https://github.com/quanhua92/tokenmon/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/quanhua92/tokenmon/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/quanhua92/tokenmon/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/quanhua92/tokenmon/compare/v0.1.6...v0.2.0
