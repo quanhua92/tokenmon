@@ -6,8 +6,8 @@ import math
 import time
 from dataclasses import dataclass, field
 
-MIN_MEASURED_DURATION: float = 1.0  # Spans under 1.0s are ignored to eliminate jitter
-MAX_REALISTIC_TPS: float = 400.0    # Ceiling to reject sub-millisecond collapsed timestamps
+MIN_MEASURED_DURATION: float = 0.1  # Require at least 100ms for millisecond-resolution timing
+MAX_REALISTIC_TPS: float = 500.0    # Ceiling to reject implausible collapsed timestamps
 
 
 def format_session_duration(seconds: float) -> str:
@@ -136,7 +136,7 @@ def create_span(
             validated_note = "invalid_duration"
         elif duration < min_duration:
             is_valid = False
-            validated_note = "duration_under_1s"
+            validated_note = f"duration_under_{min_duration:g}s"
         elif toks <= 0:
             is_valid = False
             validated_note = "zero_tokens"

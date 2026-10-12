@@ -450,7 +450,7 @@ ASCII_LOGO = r"""
 STATS_GUIDE = """\
 📖 How to read this
   • TPS = valid output tokens ÷ summed generation time (overlaps add separately); Median = the middle stream.
-  • Outputs = valid/total; streams under 1s or with uncertain timing are excluded from TPS.
+  • Outputs = valid/total; streams under 0.1s or with uncertain timing are excluded from TPS.
   • Timing: Claude turn-span may include latency; OMP starts at the first output item; Pi/OpenCode session tokens do not contribute TPS.
   • Windows: 30m, 1d, 7d, 30d, all · Next: `tokenmon timeline` for activity · `tokenmon logs` for events · `--json` for scripts.
 """

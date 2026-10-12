@@ -371,9 +371,11 @@ class TestOMPAdapter(unittest.TestCase):
 
     def test_shared_minimum_duration_token_and_tps_validation(self):
         for duration, tokens, valid, note in [
-            (2000, 120, True, None), (1500, 120, False, "duration_under_1s"),
-            (5000, 0, False, "zero_tokens"), (2000, 401, False, "unconfirmed_boundary_tps"),
-            (2000, 400, True, None),
+            (2000, 120, True, None), (1500, 120, True, None),
+            (1050, 20, False, "duration_under_0.1s"),
+            (5000, 0, False, "zero_tokens"),
+            (2000, 400, True, None), (2000, 500, True, None),
+            (2000, 501, False, "unconfirmed_boundary_tps"),
         ]:
             with self.subTest(duration=duration, tokens=tokens):
                 response = assistant(tokens=tokens, duration=duration,
@@ -382,7 +384,7 @@ class TestOMPAdapter(unittest.TestCase):
                 self.assertEqual(span.is_valid, valid)
                 self.assertEqual(span.note, note)
                 self.assertEqual(span.timing_source, "omp-ttft")
-                self.assertEqual(span.duration, (duration - 1000) / 1000)
+                self.assertAlmostEqual(span.duration, (duration - 1000) / 1000, places=6)
 
     def test_bad_output_counts_are_zero_not_input_cache_or_total(self):
         for usage in ({}, {"output": True}, {"output": -1},

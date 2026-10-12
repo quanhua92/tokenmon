@@ -282,7 +282,7 @@ class TestClaudeAdapter(unittest.TestCase):
         t = ClaudeAdapter(self.root).collect_sessions()[0]
         self.assertIsNone(t.cwd)
 
-    def test_duration_under_1s_is_excluded(self):
+    def test_subsecond_stream_with_reliable_timing_is_measured(self):
         projects = self.root / "projects" / "test-fast"
         projects.mkdir(parents=True)
         session_file = projects / "session-fast.jsonl"
@@ -314,11 +314,12 @@ class TestClaudeAdapter(unittest.TestCase):
         adapter = ClaudeAdapter(self.root)
         spans = adapter.collect()
         self.assertEqual(len(spans), 1)
-        self.assertFalse(spans[0].is_valid)
-        self.assertEqual(spans[0].note, "duration_under_1s")
-        self.assertIsNone(spans[0].tps)
+        self.assertTrue(spans[0].is_valid)
+        self.assertIsNone(spans[0].note)
+        self.assertAlmostEqual(spans[0].duration, 0.4, places=6)
+        self.assertAlmostEqual(spans[0].tps, 25.0, places=4)
 
-    def test_burst_chunks_under_1s_excluded(self):
+    def test_burst_chunks_under_minimum_duration_excluded(self):
         # Reproduces 43,000 TPS / 30,000 TPS burst flush bug where chunks arrive in 0.01s
         projects = self.root / "projects" / "test-burst"
         projects.mkdir(parents=True)
@@ -364,7 +365,7 @@ class TestClaudeAdapter(unittest.TestCase):
         spans = adapter.collect()
         self.assertEqual(len(spans), 1)
         self.assertFalse(spans[0].is_valid)
-        self.assertEqual(spans[0].note, "duration_under_1s")
+        self.assertEqual(spans[0].note, "duration_under_0.1s")
         self.assertIsNone(spans[0].tps)
 
 

@@ -139,7 +139,7 @@ metrics, recent streams, and session cards; redirected output appends snapshots.
   model-keyed aggregation.
 - Total generation time sums overlapping streams separately; human output uses
   hours/minutes/seconds, while JSON keeps numeric seconds.
-- Streams under one second, above 400 TPS, or with unconfirmed timing are excluded.
+- Streams under 0.1 seconds, above 500 TPS, or with unconfirmed timing are excluded.
   Claude's single-record `turn-span` includes latency; OMP's `omp-ttft` measures
   first-output-item to completion, not guaranteed first-text-token decoding.
 - **Pi and OpenCode show sessions and token totals, but no confirmed TPS.**

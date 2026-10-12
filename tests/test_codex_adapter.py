@@ -190,6 +190,35 @@ class TestCodexAdapter(unittest.TestCase):
         self.assertAlmostEqual(spans[0].started_at, started + 0.125)
         self.assertAlmostEqual(spans[0].duration, 1.875)
 
+    def test_diagnostic_start_survives_millisecond_placeholder_collision(self):
+        records = self._generation_records()
+        first_item = next(
+            record for record in records
+            if record.get("type") == "event_msg"
+            and record.get("payload", {}).get("type") == "item_completed"
+            and record["payload"].get("item", {}).get("id") == "r-1"
+        )
+        first_item["payload"]["completed_at_ms"] = first_item["payload"]["started_at_ms"]
+        self._write_session(records)
+
+        started = datetime.fromisoformat("2026-10-03T10:00:02+00:00").timestamp()
+        with closing(sqlite3.connect(self.root / "logs_1.sqlite")) as conn:
+            conn.execute("CREATE TABLE logs (id INTEGER PRIMARY KEY, target TEXT, ts INTEGER, ts_nanos INTEGER, feedback_log_body TEXT)")
+            conn.execute(
+                "INSERT INTO logs VALUES (?, ?, ?, ?, ?)",
+                (1, "codex_core::stream_events_utils", int(started), 250000,
+                 'Output item item_type="reasoning" item_id="r-1"'),
+            )
+            conn.commit()
+
+        span = CodexAdapter(self.root).collect()[0]
+        self.assertTrue(span.is_valid)
+        self.assertIsNone(span.note)
+        self.assertEqual(span.timing_source, "stream-log")
+        self.assertAlmostEqual(span.started_at, started + 0.00025)
+        self.assertAlmostEqual(span.duration, 1.99975, places=6)
+        self.assertAlmostEqual(span.tps, 120 / 1.99975, places=4)
+
     def test_effort_and_tier_are_captured_per_output_and_not_guessed(self):
         records = self._generation_records()
         records[0]["payload"]["effort"] = "medium"
@@ -300,12 +329,12 @@ class TestCodexAdapter(unittest.TestCase):
         self.assertEqual(spans[0].note, "unconfirmed_tool_start")
         self.assertIsNone(spans[0].tps)
 
-    def test_subsecond_duration_is_excluded(self):
+    def test_rate_above_500_tps_is_excluded(self):
         sessions_dir = self.root / "sessions"
         sessions_dir.mkdir()
         session_file = sessions_dir / "task_fast.jsonl"
 
-        # 100 tokens in 0.2s (500 TPS) -> should be excluded by shared < 1s validator
+        # A 0.2s span passes the duration floor, but 505 TPS exceeds the shared cap.
         records = [
             {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-fast"}, "timestamp": "2026-10-03T10:00:00Z"},
             {"type": "turn_context", "payload": {"turn_id": "turn-fast", "model": "o3-mini"}, "timestamp": "2026-10-03T10:00:01Z"},
@@ -323,7 +352,7 @@ class TestCodexAdapter(unittest.TestCase):
             },
             {
                 "type": "token_usage_record",
-                "payload": {"response_id": "resp-fast", "usage": {"output_tokens": 100}},
+                "payload": {"response_id": "resp-fast", "usage": {"output_tokens": 101}},
                 "timestamp": "2026-10-03T10:00:02.200Z",
             },
         ]
@@ -335,7 +364,7 @@ class TestCodexAdapter(unittest.TestCase):
         spans = adapter.collect()
         self.assertEqual(len(spans), 1)
         self.assertFalse(spans[0].is_valid)
-        self.assertEqual(spans[0].note, "duration_under_1s")
+        self.assertEqual(spans[0].note, "unconfirmed_boundary_tps")
         self.assertIsNone(spans[0].tps)
 
 

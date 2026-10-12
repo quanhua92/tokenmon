@@ -491,15 +491,10 @@ class CodexAdapter(BaseAdapter):
         first_diag = diag_starts.get(first_id)
         first_timing = timings.get(first_id)
 
-        # Detect sub-millisecond placeholder collision
-        if (
-            first_timing is not None
-            and first_timing.start == first_timing.end
-            and first_diag is not None
-            and abs(first_diag - first_timing.end) <= 0.001
-        ):
-            note = note or "unconfirmed_initial_span"
-
+        # A matching stream-log entry is an explicit item-start boundary. The
+        # JSONL item timing is only millisecond-precision and may collapse a
+        # short reasoning item to start == end, so don't reject that boundary
+        # merely because both records land in the same millisecond.
         if first_diag is not None:
             start_at = first_diag
             timing_source = "stream-log"

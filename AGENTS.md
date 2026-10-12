@@ -35,7 +35,7 @@ to normal operation or tests.
 ## Measurement rules
 
 - Build adapter spans with `create_span()`. It rejects missing/nonfinite timestamps,
-  nonpositive duration/tokens, duration below 1s, and rates above 400 TPS. An explicit
+  nonpositive duration/tokens, duration below 0.1s, and rates above 500 TPS. An explicit
   `note` invalidates a span. Preserve `timing_source` and exclusion reasons.
 - Measure generation using evidenced boundaries; request/turn elapsed time can
   include latency, tool execution, and waiting. Label fallbacks accurately and

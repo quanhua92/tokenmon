@@ -130,7 +130,7 @@ class TestAntigravityAdapter(unittest.TestCase):
             (2, 15, b"\x0a\xff"),  # truncated protobuf
             (3, 15, self._metadata(1000, 999, 100)),
             (4, 15, self._metadata(1000, 1010, 0)),
-            (5, 15, self._metadata(1000, 1001, 401)),
+            (5, 15, self._metadata(1000, 1001, 501)),
             (6, 132, self._metadata(1000, 1010, 500)),  # tools are not generation
             (7, 15, self._metadata(1000, 1002, 500)),  # evidenced 250 TPS is allowed
             (8, 15, self._metadata(2000, 2002, 200, end_field=8)),
